@@ -1,0 +1,73 @@
+defmodule Pty.Socket do
+  @moduledoc """
+  A `WebSock` handler that bridges one WebSocket to a `Pty.Session`.
+
+  This is the drop-in transport: any Plug, Phoenix, Bandit or Cowboy host can
+  upgrade a connection into it — directly, or through `Pty.Plug` — and get a
+  working terminal without touching the process model. It owns no PTY. On
+  connect it ensures the session for its id exists, attaches, and pushes the
+  scrollback so the terminal is reconstructed. A session that cannot be ensured
+  or attached yields a clean close (1011) instead of a crash. On disconnect the
+  handler simply dies — the session drops the subscription and the PTY keeps
+  running for a later reattach.
+
+  ## Init argument
+
+  A map of:
+
+    * `:session_id` (required) — which session to attach to.
+    * `:session_opts` — spawn options (see `Pty.Session`), applied only when
+      this connection is what starts the session.
+
+  ## Wire protocol
+
+    * client → server: JSON text frames, decoded by `Pty.Client`.
+    * server → client: binary frames of raw PTY output, fed straight to xterm.js.
+
+  The browser half lives in `priv/static/pty.js`.
+  """
+
+  @behaviour WebSock
+
+  alias Pty.Client
+  alias Pty.Session
+
+  @ws_close_internal_error 1011
+  @ws_close_normal 1000
+
+  @impl true
+  def init(%{session_id: id} = arg) do
+    with {:ok, session} <- Session.ensure(id, Map.get(arg, :session_opts, [])),
+         {:ok, buffer} <- attach(session) do
+      state = %{session: session}
+      if buffer == <<>>, do: {:ok, state}, else: {:push, {:binary, buffer}, state}
+    else
+      _ -> {:stop, :normal, {@ws_close_internal_error, "session unavailable"}, %{session: nil}}
+    end
+  end
+
+  defp attach(session) do
+    Session.attach(session, self())
+  catch
+    :exit, _ -> :error
+  end
+
+  @impl true
+  def handle_in({text, [opcode: :text]}, state) do
+    Client.handle(state.session, text)
+    {:ok, state}
+  end
+
+  def handle_in(_frame, state), do: {:ok, state}
+
+  @impl true
+  def handle_info({:pty_data, data}, state) do
+    {:push, {:binary, data}, state}
+  end
+
+  def handle_info({:pty_exit, code}, state) do
+    {:stop, :normal, {@ws_close_normal, "process exited (#{code})"}, state}
+  end
+
+  def handle_info(_msg, state), do: {:ok, state}
+end
