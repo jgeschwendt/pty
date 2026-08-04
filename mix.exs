@@ -9,7 +9,9 @@ defmodule Pty.MixProject do
       deps: deps(),
       description: "A PTY session engine for embedding terminals in Elixir apps.",
       docs: docs(),
-      elixir: "~> 1.20",
+      # 1.18, not 1.20: nothing here uses a newer language feature, and hosts
+      # pin their own toolchain. The suite is green on 1.18 and 1.20 alike.
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       name: "Pty",
       package: package(),
