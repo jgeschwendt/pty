@@ -76,6 +76,27 @@ defmodule Pty.SessionTest do
     end
   end
 
+  describe "spawn env" do
+    test ":env reaches the child, and a caller entry overrides the default TERM" do
+      marker = unique_marker()
+      pid = start_sh_session(env: %{"PTY_PROBE" => marker, "TERM" => "vt100"})
+
+      assert echo(pid, ~s|probe=$PTY_PROBE term=$TERM|) =~ "probe=#{marker} term=vt100"
+    end
+
+    test "TERM defaults to xterm-256color" do
+      assert echo(start_sh_session([]), ~s|term=${TERM-none}|) =~ "term=xterm-256color"
+    end
+
+    # The `false` → unset path is deliberately untested: it only bites on a variable
+    # the child INHERITED, and the inherited set is erlexec's boot snapshot (see the
+    # Session moduledoc), which a test running after :pty started cannot add to.
+    test "a false value leaves TERM inherited rather than unset" do
+      refute echo(start_sh_session(env: %{"TERM" => false}), ~s|term=${TERM-none}|) =~
+               "term=xterm-256color"
+    end
+  end
+
   describe "attach/2 + input/2" do
     test "attach returns a binary buffer and input reaches the pty" do
       {_id, pid} = start_cat_session()
@@ -260,6 +281,24 @@ defmodule Pty.SessionTest do
     {:ok, pid} = Session.ensure(id)
     on_exit(fn -> Session.kill(id) end)
     {id, pid}
+  end
+
+  defp start_sh_session(opts) do
+    id = Session.new_id()
+    System.put_env("PTY_CMD", "sh")
+    on_exit(fn -> Session.kill(id) end)
+
+    {:ok, pid} = Session.ensure(id, opts)
+    {:ok, _buffer} = Session.attach(pid, self())
+    pid
+  end
+
+  # A pty shell echoes the typed line back before running it, so both the command
+  # and its output land in the collected bytes. The appended `$((21+21))` is the
+  # discriminator: `sum=42` can only appear in the OUTPUT, never in the echo.
+  defp echo(pid, expression) do
+    Session.input(pid, ~s|echo "#{expression} sum=$((21+21))"\n|)
+    recv_until_marker("sum=42")
   end
 
   ## Helpers — pty output

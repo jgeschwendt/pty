@@ -24,9 +24,31 @@ defmodule Pty.Session do
   | `:command`   | `:command`               | `PTY_CMD`  | `$SHELL` or `/bin/sh`|
   | `:args`      | `:args`                  | `PTY_ARGS` | `[]`                 |
   | `:cwd`       | `:cwd`                   | `PTY_CWD`  | the node's cwd       |
+  | `:env`       | `:env`                   | —          | `[]`                 |
   | `:cols`      | `:cols`                  | —          | `80`                 |
   | `:rows`      | `:rows`                  | —          | `24`                 |
   | `:scrollback`| `:scrollback`            | —          | `256_000` bytes      |
+
+  ## Environment
+
+  `:env` takes a map or a list of pairs and *layers over* the environment the
+  child would otherwise inherit — it does not replace it. `TERM` is set to
+  `xterm-256color` first, so a caller entry may override it. A value of `false`
+  unsets a variable the parent had, which is how a host keeps something out of
+  the child's environment rather than merely not adding it:
+
+      Pty.start(id, command: "claude", env: %{"CLAUDE_CONFIG_DIR" => dir, "ANTHROPIC_MODEL" => false})
+
+  Two caveats, both verified against erlexec 2.3 and both surprising:
+
+    * **`TERM` cannot be unset.** `false` removes any other inherited variable,
+      but erlexec always hands its child a `TERM` — so `%{"TERM" => false}`
+      yields the inherited value, not an unset one. Override it instead. Every
+      other name honours `false`.
+    * **The inherited environment is snapshotted at boot.** The child inherits
+      from erlexec's `exec-port` daemon, forked when `:pty` starts, so a
+      `System.put_env/2` afterwards never reaches a session. Pass anything set
+      at runtime through `:env` explicitly.
   """
 
   # :temporary — a dead session must not be resurrected as an empty shell.
@@ -40,6 +62,8 @@ defmodule Pty.Session do
   # output chunks (replay is chunk-aligned, ≤ cap).
   @buffer_cap 256_000
   @default_cols 80
+  # Layered under the caller's :env, so a host may override TERM.
+  @default_env [{"TERM", "xterm-256color"}]
   @default_rows 24
   @id_bytes 9
   @info_timeout_ms 1_000
@@ -170,9 +194,7 @@ defmodule Pty.Session do
           :pty_echo,
           # erlexec's winsz is {rows, cols} — the reverse of our cols/rows API.
           {:winsz, {rows, cols}},
-          # {:env, [...]} extends (does not replace) the inherited parent env, so
-          # the child keeps the host's full environment with TERM overridden.
-          {:env, [{"TERM", "xterm-256color"}]},
+          {:env, env(opts)},
           {:cd, resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)}
         ]
 
@@ -217,6 +239,28 @@ defmodule Pty.Session do
 
   defp from_os_env(:args, value), do: String.split(value, " ", trim: true)
   defp from_os_env(_key, value), do: value
+
+  # erlexec's :env extends the inherited environment rather than replacing it, and
+  # a `false` value unsets a variable the parent had — the only way to keep an
+  # inherited var out of the child.
+  #
+  # Merged by key here rather than concatenated, because erlexec resolves a
+  # duplicate key by cancelling the pair: `[{"TERM", "xterm-256color"}, {"TERM",
+  # false}]` drops our entry and leaves the INHERITED TERM standing, so a caller
+  # asking to unset a var @default_env also sets would silently get the parent's
+  # value. Merging first means erlexec sees one entry per name.
+  defp env(opts) do
+    overrides = opts |> resolve(:env, nil, fn -> [] end) |> normalize_env()
+
+    @default_env |> Map.new() |> Map.merge(overrides) |> Enum.sort()
+  end
+
+  defp normalize_env(env) do
+    Map.new(env, fn
+      {key, false} -> {to_string(key), false}
+      {key, value} -> {to_string(key), to_string(value)}
+    end)
+  end
 
   @impl true
   def handle_call(:info, _from, state) do
