@@ -204,6 +204,13 @@ The library ships **no authentication**. A reachable session is a shell or
 the route that mounts `Pty.Plug` (an authenticated browser pipeline, or a
 loopback-only bind), and anything beyond loopback belongs behind TLS.
 
+A WebSocket handshake escapes CORS, so `Pty.Plug` refuses (`403`) a browser
+`Origin` whose host is not the request's own — otherwise any page the user
+visits could open a terminal on a loopback-only host. `:check_origin` takes
+`true` (default), an exact origin list, or `false`. The check compares the
+`Origin` against `Host`, so it cannot stop DNS rebinding: a loopback host
+reachable by name should also pin the `Host` it answers to.
+
 Session ids are unguessable and validated (`[\w-]{1,64}`) before they reach a
 log or the registry, but an id is a name, not a credential.
 

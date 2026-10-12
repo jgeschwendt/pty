@@ -47,10 +47,42 @@ defmodule Pty.PlugTest do
     # Plug.Test's conn carries no host/sec-websocket-* headers, so WebSockAdapter's
     # own validation rejects it — which is proof enough that both gates passed and
     # the connection reached the adapter rather than a 400/426.
+    # A 1-arity :session_opts is resolved against the conn before the hand-off.
+    opts = Pty.Plug.init(session_opts: &send(self(), {:session_opts, &1.query_params}))
+
     assert_raise WebSockAdapter.UpgradeError, fn ->
       conn(:get, "/pty?s=abc")
       |> put_req_header("upgrade", "websocket")
-      |> call()
+      |> Pty.Plug.call(opts)
+    end
+
+    assert_received {:session_opts, %{"s" => "abc"}}
+  end
+
+  test "a cross-origin upgrade is a 403 unless :check_origin admits it" do
+    # A WebSocket handshake escapes CORS: without this gate any page the user
+    # visits could open a shell on a loopback-only host (CSWSH).
+    upgrade = fn origin, opts ->
+      conn(:get, "/pty?s=abc")
+      |> put_req_header("upgrade", "websocket")
+      |> put_req_header("origin", origin)
+      |> Pty.Plug.call(Pty.Plug.init(opts))
+    end
+
+    for {origin, opts} <- [
+          {"https://evil.example", []},
+          {"null", []},
+          {"https://www.example.com", check_origin: ["https://app.example"]}
+        ] do
+      assert %{status: 403, resp_body: "origin not allowed"} = upgrade.(origin, opts)
+    end
+
+    for {origin, opts} <- [
+          {"http://www.example.com:4000", []},
+          {"https://evil.example", check_origin: false},
+          {"https://app.example", check_origin: ["https://app.example"]}
+        ] do
+      assert_raise WebSockAdapter.UpgradeError, fn -> upgrade.(origin, opts) end
     end
   end
 

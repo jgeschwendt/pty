@@ -10,12 +10,18 @@ defmodule Pty.Plug do
 
   Every request reaching this plug is treated as a terminal upgrade; routing
   (and **authentication** — a session is a shell running as your user) is the
-  host's job. It responds `400` for a missing or malformed session id, `426`
-  when the id is fine but the request is not a WebSocket upgrade, and otherwise
-  hands off to `Pty.Socket`.
+  host's job. It responds `400` for a missing or malformed session id, `403`
+  for a browser `Origin` that `:check_origin` refuses, `426` when the request
+  is not a WebSocket upgrade, and otherwise hands off to `Pty.Socket`.
 
   ## Options
 
+    * `:check_origin` — a WebSocket handshake escapes CORS, so any page the user
+      visits could otherwise open a terminal here (cross-site WebSocket
+      hijacking). `true` (default) admits an `Origin` whose host is the
+      request's own host; a list admits exactly those origins
+      (`["https://app.example"]`); `false` disables the check. A request with
+      no `Origin` — a non-browser client — always passes.
     * `:param` — query parameter carrying the session id (default `"s"`).
     * `:session_opts` — spawn options (see `Pty.Session`) for a session this
       connection starts. May be a keyword list, or a 1-arity function of the
@@ -29,6 +35,7 @@ defmodule Pty.Plug do
   import Plug.Conn
 
   @status_bad_request 400
+  @status_forbidden 403
   @status_upgrade_required 426
 
   @impl Plug
@@ -42,6 +49,9 @@ defmodule Pty.Plug do
     cond do
       not Pty.valid_id?(id) ->
         send_resp(conn, @status_bad_request, "invalid session id")
+
+      not origin?(conn, Keyword.get(opts, :check_origin, true)) ->
+        send_resp(conn, @status_forbidden, "origin not allowed")
 
       not upgrade?(conn) ->
         send_resp(conn, @status_upgrade_required, "expected websocket upgrade")
@@ -64,6 +74,14 @@ defmodule Pty.Plug do
       fun when is_function(fun, 1) -> fun.(conn)
       list -> list
     end
+  end
+
+  defp origin?(conn, check) do
+    conn
+    |> get_req_header("origin")
+    |> Enum.all?(fn origin ->
+      if is_list(check), do: origin in check, else: !check or URI.parse(origin).host == conn.host
+    end)
   end
 
   defp upgrade?(conn) do
