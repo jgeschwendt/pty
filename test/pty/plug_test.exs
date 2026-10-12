@@ -62,28 +62,32 @@ defmodule Pty.PlugTest do
   test "a cross-origin upgrade is a 403 unless :check_origin admits it" do
     # A WebSocket handshake escapes CORS: without this gate any page the user
     # visits could open a shell on a loopback-only host (CSWSH).
-    upgrade = fn origin, opts ->
-      conn(:get, "/pty?s=abc")
-      |> put_req_header("upgrade", "websocket")
-      |> put_req_header("origin", origin)
-      |> Pty.Plug.call(Pty.Plug.init(opts))
+    upgrade = fn host, origins, opts ->
+      conn = conn(:get, "/pty?s=abc")
+      origins = Enum.map(origins, &{"origin", &1})
+      conn = %{conn | host: host, req_headers: [{"upgrade", "websocket"} | origins]}
+      Pty.Plug.call(conn, Pty.Plug.init(opts))
     end
 
-    for {origin, opts} <- [
-          {"https://evil.example", []},
-          {"null", []},
-          {"https://www.example.com", check_origin: ["https://app.example"]}
+    for {host, origins, opts} <- [
+          {"localhost", ["https://evil.example"], []},
+          {"localhost", ["null"], []},
+          {"localhost", ["http://localhost", "https://evil.example"], []},
+          {"localhost", ["http://localhost"], check_origin: ["https://app.example"]}
         ] do
-      assert %{status: 403, resp_body: "origin not allowed"} = upgrade.(origin, opts)
+      assert %{status: 403, resp_body: "origin not allowed"} = upgrade.(host, origins, opts)
     end
 
-    for {origin, opts} <- [
-          {"http://www.example.com:4000", []},
-          {"https://evil.example", check_origin: false},
-          {"https://app.example", check_origin: ["https://app.example"]}
+    for {host, origins, opts} <- [
+          {"localhost", ["http://localhost:4000"], []},
+          {"[::1]", ["http://[::1]:4000"], []},
+          {"localhost", ["https://evil.example"], check_origin: false},
+          {"localhost", ["https://app.example"], check_origin: ["https://app.example"]}
         ] do
-      assert_raise WebSockAdapter.UpgradeError, fn -> upgrade.(origin, opts) end
+      assert_raise WebSockAdapter.UpgradeError, fn -> upgrade.(host, origins, opts) end
     end
+
+    assert_raise ArgumentError, fn -> Pty.Plug.init(check_origin: nil) end
   end
 
   defp call(conn), do: Pty.Plug.call(conn, @opts)

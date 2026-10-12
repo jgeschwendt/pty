@@ -28,7 +28,7 @@ xterm.js ─ws─► your endpoint ─► Pty.Plug ─► Pty.Socket ─attach�
 | `Pty.Session` | `GenServer` owning one PTY: fan-out to subscribers, scrollback, resize. |
 | `Pty.Client`  | The transport-agnostic contract, plus the shared frame decoder.         |
 | `Pty.Socket`  | `WebSock` handler bridging one websocket to a session.                  |
-| `Pty.Plug`    | Mounts that handler on a host endpoint (id validation, upgrade).        |
+| `Pty.Plug`    | Mounts that handler on a host endpoint (id and origin checks, upgrade). |
 
 `:pty` is a library application: adding it to your deps starts the session
 registry and the session `DynamicSupervisor`, and nothing else. You do not add
@@ -205,11 +205,15 @@ the route that mounts `Pty.Plug` (an authenticated browser pipeline, or a
 loopback-only bind), and anything beyond loopback belongs behind TLS.
 
 A WebSocket handshake escapes CORS, so `Pty.Plug` refuses (`403`) a browser
-`Origin` whose host is not the request's own — otherwise any page the user
-visits could open a terminal on a loopback-only host. `:check_origin` takes
-`true` (default), an exact origin list, or `false`. The check compares the
-`Origin` against `Host`, so it cannot stop DNS rebinding: a loopback host
-reachable by name should also pin the `Host` it answers to.
+`Origin` whose host is not the request's own — otherwise any page on another
+site could open a terminal on a loopback-only host. `:check_origin` takes
+`true` (default), an exact origin list, or `false`. The default compares host
+only (as Phoenix does), so a proxy in front must forward `Host`, and on
+loopback, where every local port shares the host, a list
+(`["http://localhost:4000"]`) is the stricter choice. A page on another host
+that connects with an absolute `ws(s)://` url needs its origin listed. Nor can
+a `Host` comparison stop DNS rebinding: a loopback host reachable by name
+should also pin the `Host` it answers to.
 
 Session ids are unguessable and validated (`[\w-]{1,64}`) before they reach a
 log or the registry, but an id is a name, not a credential.

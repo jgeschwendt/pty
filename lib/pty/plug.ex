@@ -19,8 +19,10 @@ defmodule Pty.Plug do
     * `:check_origin` — a WebSocket handshake escapes CORS, so any page the user
       visits could otherwise open a terminal here (cross-site WebSocket
       hijacking). `true` (default) admits an `Origin` whose host is the
-      request's own host; a list admits exactly those origins
-      (`["https://app.example"]`); `false` disables the check. A request with
+      request's `Host` — host only, any scheme or port, as Phoenix does, so a
+      fronting proxy must forward `Host`; a list admits exactly those
+      serialized origins (`["http://localhost:4000"]`), the stricter choice on
+      loopback, where every local port shares the host; `false` disables it. A request with
       no `Origin` — a non-browser client — always passes.
     * `:param` — query parameter carrying the session id (default `"s"`).
     * `:session_opts` — spawn options (see `Pty.Session`) for a session this
@@ -39,7 +41,15 @@ defmodule Pty.Plug do
   @status_upgrade_required 426
 
   @impl Plug
-  def init(opts), do: opts
+  def init(opts) do
+    case Keyword.get(opts, :check_origin, true) do
+      check when is_boolean(check) or is_list(check) ->
+        opts
+
+      other ->
+        raise ArgumentError, ":check_origin must be a boolean or a list, got #{inspect(other)}"
+    end
+  end
 
   @impl Plug
   def call(conn, opts) do
@@ -80,7 +90,9 @@ defmodule Pty.Plug do
     conn
     |> get_req_header("origin")
     |> Enum.all?(fn origin ->
-      if is_list(check), do: origin in check, else: !check or URI.parse(origin).host == conn.host
+      if is_list(check),
+        do: origin in check,
+        else: !check or URI.parse(origin).host == URI.parse("//" <> conn.host).host
     end)
   end
 
