@@ -343,7 +343,9 @@ defmodule Pty.Session do
 
   defp exit_code(_other), do: 1
 
+  # A chunk alone over the cap keeps its tail, so a replay is never emptied.
   defp append(%{buffer: q, buffer_bytes: n, cap: cap} = state, data) do
+    data = binary_part(data, byte_size(data), -min(byte_size(data), cap))
     {q, n} = trim(:queue.in(data, q), n + byte_size(data), cap)
     %{state | buffer: q, buffer_bytes: n}
   end

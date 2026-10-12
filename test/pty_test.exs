@@ -98,6 +98,12 @@ defmodule PtyTest do
       assert Pty.reap("nope") == {:error, :not_found}
       assert Pty.info("nope") == nil
     end
+
+    test "attach/2 on a pid that died is {:error, :not_found}, not an exit" do
+      {pid, ref} = spawn_monitor(fn -> :ok end)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}
+      assert Pty.attach(pid) == {:error, :not_found}
+    end
   end
 
   describe "reap/1 + reap_all/0 + list/0" do

@@ -271,6 +271,15 @@ defmodule Pty.SessionTest do
       assert received > @buffer_cap
       assert find_session(id).buffer_bytes <= @buffer_cap
     end
+
+    test "a chunk larger than the cap keeps its tail rather than emptying the replay" do
+      # Driven through the callbacks: no pty needed to exercise the deque.
+      state = %{os_pid: 1, subs: %{}, buffer: :queue.new(), buffer_bytes: 0, cap: 4}
+      {:noreply, state} = Session.handle_info({:stdout, 1, "abcdef"}, state)
+
+      assert {:reply, {:ok, "cdef"}, %{buffer_bytes: 4}} =
+               Session.handle_call({:attach, self()}, nil, state)
+    end
   end
 
   ## Helpers — session lifecycle

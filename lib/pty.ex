@@ -80,6 +80,9 @@ defmodule Pty do
   @spec attach(session, pid) :: {:ok, binary} | {:error, :not_found}
   def attach(session, subscriber \\ self()) do
     with {:ok, pid} <- resolve(session), do: Session.attach(pid, subscriber)
+  catch
+    # A pid that died, or a session whose child exited before the call landed.
+    :exit, _ -> {:error, :not_found}
   end
 
   @doc "Unsubscribe `subscriber`. The PTY keeps running."

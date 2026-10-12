@@ -38,18 +38,12 @@ defmodule Pty.Socket do
   @impl true
   def init(%{session_id: id} = arg) do
     with {:ok, session} <- Session.ensure(id, Map.get(arg, :session_opts, [])),
-         {:ok, buffer} <- attach(session) do
+         {:ok, buffer} <- Pty.attach(session) do
       state = %{session: session}
       if buffer == <<>>, do: {:ok, state}, else: {:push, {:binary, buffer}, state}
     else
       _ -> {:stop, :normal, {@ws_close_internal_error, "session unavailable"}, %{session: nil}}
     end
-  end
-
-  defp attach(session) do
-    Session.attach(session, self())
-  catch
-    :exit, _ -> :error
   end
 
   @impl true
