@@ -225,9 +225,10 @@ log or the registry, but an id is a name, not a credential.
   `Pty.list/0` reports `subscribers` and `started` — reap what has had zero
   subscribers for your TTL.
 - **Scrollback is raw bytes**: a bounded deque of output chunks (`:scrollback`,
-  256 KB default, chunk-aligned). Replay redraws a full-screen TUI correctly in
-  practice but is not a VT snapshot; for exactness, parse terminal state
-  server-side and redraw from that.
+  256 KB default, chunk-aligned; a single chunk over the cap keeps its tail).
+  Replay redraws a full-screen TUI correctly in practice but is not a VT
+  snapshot; for exactness, parse terminal state server-side and redraw from
+  that.
 - **Reaping sends SIGHUP**, the signal a real terminal sends when its window
   closes — interactive shells ignore SIGTERM. Sessions trap exits, so a graceful
   host shutdown reaps every child; no orphaned PTYs.

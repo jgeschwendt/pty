@@ -81,8 +81,9 @@ defmodule Pty do
   def attach(session, subscriber \\ self()) do
     with {:ok, pid} <- resolve(session), do: Session.attach(pid, subscriber)
   catch
-    # A pid that died, or a session whose child exited before the call landed.
-    :exit, _ -> {:error, :not_found}
+    # A pid that died, or a session that ended before the call landed. A
+    # timeout or a crash still exits: the session may yet be alive.
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> {:error, :not_found}
   end
 
   @doc "Unsubscribe `subscriber`. The PTY keeps running."

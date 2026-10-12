@@ -59,7 +59,8 @@ defmodule Pty.Session do
   @registry Pty.SessionRegistry
   @supervisor Pty.SessionSupervisor
   # Replayed to reconstruct the terminal on (re)attach. Bounded deque of raw
-  # output chunks (replay is chunk-aligned, ≤ cap).
+  # output chunks (replay is chunk-aligned, ≤ cap; a chunk over the cap alone
+  # is cut to its tail).
   @buffer_cap 256_000
   @default_cols 80
   # Layered under the caller's :env, so a host may override TERM.
@@ -343,9 +344,14 @@ defmodule Pty.Session do
 
   defp exit_code(_other), do: 1
 
-  # A chunk alone over the cap keeps its tail, so a replay is never emptied.
+  # A chunk alone over the cap keeps a copy of its tail (a bare slice would pin
+  # the whole chunk), so a replay is never emptied; an empty one is not queued.
+  defp append(state, <<>>), do: state
+
+  defp append(%{cap: cap} = state, data) when byte_size(data) > cap,
+    do: append(state, :binary.copy(binary_part(data, byte_size(data), -cap)))
+
   defp append(%{buffer: q, buffer_bytes: n, cap: cap} = state, data) do
-    data = binary_part(data, byte_size(data), -min(byte_size(data), cap))
     {q, n} = trim(:queue.in(data, q), n + byte_size(data), cap)
     %{state | buffer: q, buffer_bytes: n}
   end

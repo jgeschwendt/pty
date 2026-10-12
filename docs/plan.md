@@ -36,7 +36,10 @@ session out of process; the host owns endpoint, auth and page.
 
 ## Next
 
-1. Reaped sessions: verify on the host that `Pty.reap/1` leaves attached
-   sockets open with no `{:pty_exit, _}`, then fix and pin it with a test.
+1. Session lifecycle, awaiting the owner (`proposal:jgeschwendt/pty:session-lifecycle`):
+   reap/crash sends no `{:pty_exit, _}` and leaves sockets open; SIGHUP-only
+   reap orphans a child that ignores it; a reconnect after a missed `1000`
+   silently respawns; `pty.js` resets backoff before init can refuse. Needs
+   a PTY-capable host.
 2. Coverage gate: `mix test --cover` thresholds at 90 %; the house bar is 100.
 3. No CI and no pre-push hook yet.

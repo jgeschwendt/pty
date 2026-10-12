@@ -274,11 +274,19 @@ defmodule Pty.SessionTest do
 
     test "a chunk larger than the cap keeps its tail rather than emptying the replay" do
       # Driven through the callbacks: no pty needed to exercise the deque.
-      state = %{os_pid: 1, subs: %{}, buffer: :queue.new(), buffer_bytes: 0, cap: 4}
-      {:noreply, state} = Session.handle_info({:stdout, 1, "abcdef"}, state)
+      tail = String.duplicate("t", 100)
+      chunk = String.duplicate("x", 900) <> tail
+      state = %{os_pid: 1, subs: %{}, buffer: :queue.new(), buffer_bytes: 0, cap: 100}
+      {:noreply, kept} = Session.handle_info({:stdout, 1, chunk}, state)
+      {:noreply, off} = Session.handle_info({:stdout, 1, chunk}, %{state | cap: 0})
 
-      assert {:reply, {:ok, "cdef"}, %{buffer_bytes: 4}} =
-               Session.handle_call({:attach, self()}, nil, state)
+      assert {:reply, {:ok, ^tail}, %{buffer_bytes: 100}} =
+               Session.handle_call({:attach, self()}, nil, kept)
+
+      # The tail is a copy, not a slice pinning the chunk; cap 0 queues nothing.
+      assert [kept_tail] = :queue.to_list(kept.buffer)
+      assert :binary.referenced_byte_size(kept_tail) == 100
+      assert :queue.is_empty(off.buffer)
     end
   end
 
