@@ -5,11 +5,10 @@ defmodule Pty.Socket do
   This is the drop-in transport: any Plug, Phoenix, Bandit or Cowboy host can
   upgrade a connection into it — directly, or through `Pty.Plug` — and get a
   working terminal without touching the process model. It owns no PTY. On
-  connect it ensures the session for its id exists, attaches, and pushes the
-  scrollback so the terminal is reconstructed. A session that cannot be ensured
-  or attached yields a clean close (1011) instead of a crash. On disconnect the
-  handler simply dies — the session drops the subscription and the PTY keeps
-  running for a later reattach.
+  connect it ensures the session for its id exists (or, reattaching, only finds
+  it), attaches, and pushes the scrollback as the first frame — empty or not, so
+  the client knows it is attached. On disconnect the handler simply dies — the
+  session drops the subscription and the PTY keeps running for a later reattach.
 
   ## Init argument
 
@@ -18,11 +17,17 @@ defmodule Pty.Socket do
     * `:session_id` (required) — which session to attach to.
     * `:session_opts` — spawn options (see `Pty.Session`), applied only when
       this connection is what starts the session.
+    * `:reattach` — when true, never start a session: a client coming back to
+      one it already had must not get a fresh shell under the old id.
 
   ## Wire protocol
 
     * client → server: JSON text frames, decoded by `Pty.Client`.
-    * server → client: binary frames of raw PTY output, fed straight to xterm.js.
+    * server → client: binary frames of raw PTY output, fed straight to xterm.js;
+      the first is the scrollback.
+    * close `1000`: the session ended (its child exited or it was reaped).
+    * close `4404`: a reattach found no session — it ended while away.
+    * close `1011`: the session could not be started or attached; transient.
 
   The browser half lives in `priv/static/pty.js`.
   """
@@ -34,17 +39,25 @@ defmodule Pty.Socket do
 
   @ws_close_internal_error 1011
   @ws_close_normal 1000
+  @ws_close_not_found 4404
 
   @impl true
   def init(%{session_id: id} = arg) do
-    with {:ok, session} <- Session.ensure(id, Map.get(arg, :session_opts, [])),
+    with {:ok, session} <- find(id, arg),
          {:ok, buffer} <- Pty.attach(session) do
-      state = %{session: session}
-      if buffer == <<>>, do: {:ok, state}, else: {:push, {:binary, buffer}, state}
+      # Monitored, so even a session killed outright closes the socket.
+      Process.monitor(session)
+      {:push, {:binary, buffer}, %{session: session}}
     else
-      _ -> {:stop, :normal, {@ws_close_internal_error, "session unavailable"}, %{session: nil}}
+      :error -> close(@ws_close_not_found, "session not found")
+      _ -> close(@ws_close_internal_error, "session unavailable")
     end
   end
+
+  defp find(id, %{reattach: true}), do: Session.whereis(id)
+  defp find(id, arg), do: Session.ensure(id, Map.get(arg, :session_opts, []))
+
+  defp close(code, reason), do: {:stop, :normal, {code, reason}, %{session: nil}}
 
   @impl true
   def handle_in({text, [opcode: :text]}, state) do
@@ -61,6 +74,10 @@ defmodule Pty.Socket do
 
   def handle_info({:pty_exit, code}, state) do
     {:stop, :normal, {@ws_close_normal, "process exited (#{code})"}, state}
+  end
+
+  def handle_info({:DOWN, _ref, :process, session, _reason}, %{session: session} = state) do
+    {:stop, :normal, {@ws_close_normal, "session ended"}, state}
   end
 
   def handle_info(_msg, state), do: {:ok, state}

@@ -3,7 +3,6 @@ defmodule Pty.PlugTest do
   # itself needs a real HTTP server; Pty.SocketTest covers what it hands off to.
   use ExUnit.Case, async: true
 
-  import Plug.Conn
   import Plug.Test
 
   @opts Pty.Plug.init([])
@@ -43,20 +42,25 @@ defmodule Pty.PlugTest do
     assert Pty.Plug.call(conn(:get, "/pty?s=abc"), opts).status == @status_bad_request
   end
 
-  test "an upgrade request is handed to the adapter" do
-    # Plug.Test's conn carries no host/sec-websocket-* headers, so WebSockAdapter's
-    # own validation rejects it — which is proof enough that both gates passed and
-    # the connection reached the adapter rather than a 400/426.
+  test "an upgrade request is handed to Pty.Socket, reattach flag and all" do
     # A 1-arity :session_opts is resolved against the conn before the hand-off.
-    opts = Pty.Plug.init(session_opts: &send(self(), {:session_opts, &1.query_params}))
+    opts = Pty.Plug.init(session_opts: &[cwd: &1.query_params["s"]])
 
-    assert_raise WebSockAdapter.UpgradeError, fn ->
-      conn(:get, "/pty?s=abc")
-      |> put_req_header("upgrade", "websocket")
-      |> Pty.Plug.call(opts)
+    for {query, reattach} <- [{"s=abc", false}, {"s=abc&reattach=1", true}] do
+      conn =
+        conn(:get, "/pty?" <> query)
+        |> Map.put(:req_headers, [
+          {"host", "www.example.com"},
+          {"connection", "Upgrade"},
+          {"upgrade", "websocket"},
+          {"sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="},
+          {"sec-websocket-version", "13"}
+        ])
+        |> Pty.Plug.call(opts)
+
+      assert [{:websocket, {Pty.Socket, arg, _}}] = Plug.Test.sent_upgrades(conn)
+      assert arg == %{session_id: "abc", session_opts: [cwd: "abc"], reattach: reattach}
     end
-
-    assert_received {:session_opts, %{"s" => "abc"}}
   end
 
   test "a cross-origin upgrade is a 403 unless :check_origin admits it" do

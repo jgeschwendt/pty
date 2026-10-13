@@ -8,7 +8,10 @@
 //   Pty.mount(el, "/pty?s=" + id, { xterm: { Terminal, FitAddon } })
 //   Pty.connect(existingTerminal, "/pty?s=" + id)
 //
-// Server → client frames are binary PTY output, written straight through.
+// Server → client frames are binary PTY output, written straight through; the
+// first is the scrollback, and marks the socket attached. Every reconnect asks
+// with ?reattach, so a session that ended while away closes 4404 instead of
+// being silently respawned under the old id.
 // Client → server frames are JSON: {t:"i",d} for input, {t:"r",cols,rows} for
 // resize. OSC 0/2 (title) surfaces as the onTitle callback rather than a
 // document.title write — an embedded rail must not rename its host page. OSC 52
@@ -20,6 +23,7 @@
   var RECONNECT_BASE_MS = 1000;
   var RECONNECT_MAX_MS = 15000;
   var WS_CLOSE_NORMAL = 1000;
+  var WS_CLOSE_NOT_FOUND = 4404;
 
   var DEFAULT_TERMINAL_OPTIONS = {
     allowProposedApi: true, // required by the unicode11 addon
@@ -31,21 +35,21 @@
     scrollback: 5000,
   };
 
-  // "/pty?s=x" → "ws://host/pty?s=x"; an absolute ws(s):// url passes through.
+  // "/pty?s=x" → "ws://host/pty?s=x"; an absolute ws(s):// url keeps its scheme.
   function socketUrl(url) {
-    if (/^wss?:/.test(url)) return url;
     var resolved = new URL(url, location.href);
-    resolved.protocol = resolved.protocol === "https:" ? "wss:" : "ws:";
-    return resolved.href;
+    if (resolved.protocol === "https:") resolved.protocol = "wss:";
+    if (resolved.protocol === "http:") resolved.protocol = "ws:";
+    return resolved;
   }
 
   /**
    * Wire an existing xterm.js Terminal to a session's websocket.
    *
-   * Options: onTitle(title), onOpen(), onClose(event), onExit(event) — fired
-   * once when the child process itself exited, so the caller can tear the view
-   * down instead of waiting for a reconnect that will never help; reconnect
-   * (default true).
+   * Options: onTitle(title), onOpen() — fired on each attach, once the
+   * scrollback arrives — onClose(event), onExit(event) — fired once when the
+   * session ended, so the caller can tear the view down instead of waiting for
+   * a reconnect that will never help; reconnect (default true).
    *
    * Returns a handle: { send(msg), sendDims(), close(), get socket() }.
    */
@@ -57,6 +61,7 @@
     var socket = null;
     var closed = false;
     var timer = null;
+    var attached = false;
 
     function send(msg) {
       if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
@@ -67,19 +72,24 @@
     }
 
     function open() {
+      var fresh = true;
+      // Once attached, never spawn again: a reconnect only reattaches.
+      if (attached) target.searchParams.set("reattach", "1");
       socket = new WebSocket(target);
       socket.binaryType = "arraybuffer";
 
-      socket.onopen = function () {
-        delay = RECONNECT_BASE_MS;
-        // The session replays its scrollback as the first frames; reset so a
-        // reconnect redraws rather than appending to a stale screen.
-        term.reset();
-        sendDims();
-        if (opts.onOpen) opts.onOpen();
-      };
-
       socket.onmessage = function (event) {
+        // The first frame is the scrollback: only now is the socket attached —
+        // an upgrade the server then refuses opens too. Reset so a reconnect
+        // redraws rather than appending to a stale screen, and back off afresh.
+        if (fresh) {
+          fresh = false;
+          attached = true;
+          delay = RECONNECT_BASE_MS;
+          term.reset();
+          sendDims();
+          if (opts.onOpen) opts.onOpen();
+        }
         term.write(new Uint8Array(event.data));
       };
 
@@ -87,9 +97,9 @@
         if (opts.onClose) opts.onClose(event);
         if (closed) return;
 
-        // 1000 is the child exiting — the session is gone, so reconnecting
-        // would silently spawn a NEW terminal. Anything else is transport loss.
-        if (event.code === WS_CLOSE_NORMAL) {
+        // 1000: the session ended. 4404: it ended while we were away. Either
+        // way there is nothing to come back to. Anything else is transport loss.
+        if (event.code === WS_CLOSE_NORMAL || event.code === WS_CLOSE_NOT_FOUND) {
           if (opts.onExit) opts.onExit(event);
           return;
         }

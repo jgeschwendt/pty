@@ -55,7 +55,7 @@ Pty.write(session, "ls\n")
 Pty.resize(session, 120, 40)
 # receive {:pty_data, bytes} … and once, {:pty_exit, code}
 Pty.detach(session)                      # PTY keeps running
-Pty.reap(id)                             # SIGHUP the child, end the session
+Pty.reap(id)                             # hang the child up, end the session
 ```
 
 | Function               | Does                                                             |
@@ -69,7 +69,7 @@ Pty.reap(id)                             # SIGHUP the child, end the session
 | `write/2`              | Write to the PTY's stdin.                                         |
 | `resize/3`             | Resize the PTY (SIGWINCH to the child).                           |
 | `info/1`, `list/0`     | Metadata: command, uptime, subscribers, buffer size, dimensions.  |
-| `reap/1`, `reap_all/0` | End sessions (SIGHUP — interactive shells ignore SIGTERM).        |
+| `reap/1`, `reap_all/0` | End sessions: SIGHUP, then SIGKILL to the group 2 s later.        |
 | `asset_dir/0`          | Where `pty.js` lives, for `Plug.Static` or a copy step.           |
 
 Every function takes a session as an **id** or a **pid**; an id naming no live
@@ -77,15 +77,21 @@ session is `{:error, :not_found}`. Spawn options (`:command`, `:args`, `:cwd`,
 `:cols`, `:rows`, `:scrollback`) resolve as **option › application env › OS env
 (`PTY_CMD`, `PTY_ARGS`, `PTY_CWD`) › default**, and apply only when `start/2`
 actually starts something. `start/2` is fail-closed: erlexec launches its child
-asynchronously, so the resolved `:command` is checked against `PATH` up front
-and a missing binary is `{:error, _}` rather than a live pid over a dead PTY.
+asynchronously, so `:command` is resolved up front as the child would resolve
+it — a path against `:cwd`, a bare name on the `PATH` in `:env` or inherited —
+and a missing binary or `:cwd` is `{:error, _}` rather than a live pid over a
+dead PTY.
 
 ### Wire protocol
 
-Client sends JSON text frames; server sends binary output:
+Client sends JSON text frames; server sends binary output, the scrollback
+first (even empty — it is the "attached" signal):
 
 - `{"t":"i","d":"<keys>"}` — keyboard input → PTY stdin
 - `{"t":"r","cols":C,"rows":R}` — resize
+
+The server closes `1000` when the session ends, `4404` when a reconnect
+(`?reattach`) finds no session, and `1011` when one cannot be started.
 
 Malformed frames (bad JSON, unknown type, out-of-range or non-integer
 dimensions) are ignored at the boundary rather than crashing the session.
@@ -109,8 +115,11 @@ term.dispose();  // unmount: detaches the client, the PTY keeps running
 
 `Terminal` is the only required piece; each addon is used if present
 (`ClipboardAddon` is what makes OSC 52 clipboard writes work). It reconnects
-with exponential backoff on transport loss and *stops* on a clean 1000 — that
-code means the child exited, and reconnecting would silently spawn a new one.
+with exponential backoff on transport loss — reset only once a socket is
+attached, so a refused upgrade backs off instead of hammering — and every
+reconnect is attach-only: a session that ended while the client was away
+closes `4404` rather than respawning under the old id. Both `1000` and `4404`
+stop it and fire `onExit`.
 `Pty.connect(term, url, opts)` wires a Terminal you built yourself.
 
 ## Integrating
@@ -229,9 +238,11 @@ log or the registry, but an id is a name, not a credential.
   Replay redraws a full-screen TUI correctly in practice but is not a VT
   snapshot; for exactness, parse terminal state server-side and redraw from
   that.
-- **Reaping sends SIGHUP**, the signal a real terminal sends when its window
-  closes — interactive shells ignore SIGTERM. Sessions trap exits, so a graceful
-  host shutdown reaps every child; no orphaned PTYs.
+- **Reaping hangs up**: SIGHUP, the signal a real terminal sends when its
+  window closes (interactive shells ignore SIGTERM), then SIGKILL to the
+  child's process group 2 s later. `reap/1` returns once the child is gone, and
+  subscribers get `{:pty_exit, 129}`. erlexec links each child to its session,
+  so even a session killed outright takes its child along — no orphaned PTYs.
 
 ## Development
 

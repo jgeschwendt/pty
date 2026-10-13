@@ -24,10 +24,22 @@ defmodule Pty.SocketTest do
   end
 
   describe "init/1" do
-    test "returns {:ok, state} when there is no scrollback" do
+    test "pushes the scrollback first even when it is empty — the attach signal" do
       id = fresh_id()
-      assert {:ok, state} = Socket.init(%{session_id: id})
+      assert {:push, {:binary, ""}, state} = Socket.init(%{session_id: id})
       assert is_pid(state.session)
+    end
+
+    test "a reattach attaches to a live session but never starts one" do
+      id = fresh_id()
+
+      assert {:stop, :normal, {4404, _}, %{session: nil}} =
+               Socket.init(%{session_id: id, reattach: true})
+
+      assert Pty.lookup(id) == :error
+
+      {:ok, pid} = Session.ensure(id)
+      assert {:push, _, %{session: ^pid}} = Socket.init(%{session_id: id, reattach: true})
     end
 
     test "replays existing scrollback as a binary push" do
@@ -57,7 +69,7 @@ defmodule Pty.SocketTest do
 
     test ":session_opts configure the session this connection starts" do
       id = fresh_id()
-      assert {:ok, _state} = Socket.init(%{session_id: id, session_opts: [args: ["-u"]]})
+      assert {:push, _, _} = Socket.init(%{session_id: id, session_opts: [args: ["-u"]]})
 
       # Options beat the PTY_CMD env this suite sets, and reach the spawn.
       assert Pty.info(id).command == "cat -u"
@@ -138,6 +150,16 @@ defmodule Pty.SocketTest do
       assert is_binary(reason)
     end
 
+    test "a session that dies without a word closes the socket" do
+      state = init_socket(fresh_id())
+      Process.exit(state.session, :kill)
+
+      assert_receive {:DOWN, _, :process, _, _} = down, 1_000
+
+      assert {:stop, :normal, {@ws_close_normal, "session ended"}, ^state} =
+               Socket.handle_info(down, state)
+    end
+
     test "unrelated messages are ignored" do
       state = %{session: self()}
       assert {:ok, ^state} = Socket.handle_info(:whatever, state)
@@ -153,9 +175,7 @@ defmodule Pty.SocketTest do
   end
 
   defp init_socket(id) do
-    case Socket.init(%{session_id: id}) do
-      {:ok, state} -> state
-      {:push, _frame, state} -> state
-    end
+    {:push, _frame, state} = Socket.init(%{session_id: id})
+    state
   end
 end

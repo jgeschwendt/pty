@@ -24,7 +24,9 @@ defmodule Pty.Plug do
       serialized origins (`["http://localhost:4000"]`), the stricter choice on
       loopback, where every local port shares the host; `false` disables it. A request with
       no `Origin` — a non-browser client — always passes.
-    * `:param` — query parameter carrying the session id (default `"s"`).
+    * `:param` — query parameter carrying the session id (default `"s"`). A
+      `reattach` parameter (any value), which `pty.js` sends on every reconnect,
+      makes the connection attach-only (see `Pty.Socket`).
     * `:session_opts` — spawn options (see `Pty.Session`) for a session this
       connection starts. May be a keyword list, or a 1-arity function of the
       `conn` for per-request values (a cwd from the path, say).
@@ -72,7 +74,11 @@ defmodule Pty.Plug do
   end
 
   defp upgrade(conn, id, opts) do
-    arg = %{session_id: id, session_opts: session_opts(conn, opts)}
+    arg = %{
+      session_id: id,
+      session_opts: session_opts(conn, opts),
+      reattach: Map.has_key?(conn.query_params, "reattach")
+    }
 
     conn
     |> WebSockAdapter.upgrade(Pty.Socket, arg, timeout: Keyword.get(opts, :timeout, :infinity))
