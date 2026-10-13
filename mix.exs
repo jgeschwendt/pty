@@ -16,6 +16,8 @@ defmodule Pty.MixProject do
       name: "Pty",
       package: package(),
       start_permanent: Mix.env() == :prod,
+      # The house bar: `mix test --cover` fails below it.
+      test_coverage: [summary: [threshold: 100]],
       version: @version
     ]
   end

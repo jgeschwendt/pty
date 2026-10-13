@@ -10,8 +10,10 @@ defmodule Pty.Client do
        feed. The reply is the session's scrollback — write it to the terminal
        before anything else so the view is reconstructed.
     2. **Handle two messages.** The session sends `{:pty_data, binary}` for
-       every chunk of PTY output and `{:pty_exit, code}` once, when the child
-       exits. Everything else is the client's own business.
+       every chunk of PTY output and `{:pty_exit, code}` once, when the session
+       ends — its child exited (`code` is the exit status), or it was reaped or
+       crashed (`129`). Only a session killed outright cannot say so: monitor
+       its pid to cover that too. Everything else is the client's own business.
     3. **Detach.** Dying is enough — the session monitors subscribers and drops
        them. Call `Pty.detach/2` when the client process outlives the view.
 

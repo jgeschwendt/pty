@@ -1,15 +1,15 @@
 defmodule Pty.TestHelpers do
   @moduledoc """
   Helpers shared across Pty test modules: env save/restore, session lookup,
-  deadline-bounded polling, and pty-output collection.
+  bounded polling, and pty-output collection.
   """
 
-  import ExUnit.Assertions, only: [flunk: 1]
+  import ExUnit.Assertions
 
   alias Pty.Session
 
-  @poll_deadline_ms 2_000
   @poll_interval_ms 25
+  @poll_tries 80
   @recv_deadline_ms 2_000
 
   def deadline(ms), do: now() + ms
@@ -18,45 +18,29 @@ defmodule Pty.TestHelpers do
 
   def now, do: System.monotonic_time(:millisecond)
 
-  def restore_env(key, nil), do: System.delete_env(key)
-  def restore_env(key, val), do: System.put_env(key, val)
+  def restore_env(key, val),
+    do: if(val, do: System.put_env(key, val), else: System.delete_env(key))
 
   def unique_marker, do: "MARK#{System.unique_integer([:positive])}"
 
-  def poll_until(fun), do: poll_until(fun, deadline(@poll_deadline_ms))
-
-  def poll_until(fun, deadline) do
-    cond do
-      fun.() ->
-        :ok
-
-      now() > deadline ->
-        flunk("condition not met within #{@poll_deadline_ms}ms")
-
-      true ->
+  # Truthy within @poll_tries × @poll_interval_ms, or the test fails.
+  def poll_until(fun, tries \\ @poll_tries) do
+    fun.() ||
+      (
+        assert tries > 0, "condition not met within #{@poll_tries * @poll_interval_ms}ms"
         Process.sleep(@poll_interval_ms)
-        poll_until(fun, deadline)
-    end
+        poll_until(fun, tries - 1)
+      )
   end
 
-  def recv_until_marker(marker) do
-    recv_until_marker(marker, "", deadline(@recv_deadline_ms))
-  end
-
-  def recv_until_marker(marker, acc, deadline) do
-    cond do
-      String.contains?(acc, marker) ->
-        acc
-
-      now() > deadline ->
-        flunk("never saw marker #{marker}; collected #{byte_size(acc)} bytes of pty output")
-
-      true ->
-        receive do
-          {:pty_data, data} -> recv_until_marker(marker, acc <> data, deadline)
-        after
-          @poll_interval_ms -> recv_until_marker(marker, acc, deadline)
-        end
+  # PTY output collected until it contains `marker`; each chunk must arrive
+  # within @recv_deadline_ms.
+  def recv_until_marker(marker, acc \\ "") do
+    if acc =~ marker do
+      acc
+    else
+      assert_receive {:pty_data, data}, @recv_deadline_ms
+      recv_until_marker(marker, acc <> data)
     end
   end
 end

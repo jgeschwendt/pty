@@ -76,6 +76,55 @@ defmodule Pty.SessionTest do
     end
   end
 
+  describe "executable resolution" do
+    @describetag :tmp_dir
+
+    test "a path resolves against :cwd, a bare name against the :env PATH", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "probe"), "#!/bin/sh\necho resolved; exec cat\n")
+      File.chmod!(Path.join(dir, "probe"), 0o755)
+
+      for opts <- [
+            [command: "./probe", cwd: dir],
+            [command: "probe", env: %{"PATH" => dir <> ":/bin"}]
+          ] do
+        id = Session.new_id()
+        on_exit(fn -> Session.kill(id) end)
+        assert {:ok, pid} = Session.ensure(id, opts)
+        {:ok, _} = Session.attach(pid, self())
+        assert recv_until_marker("resolved") =~ "resolved"
+      end
+
+      assert {:error, {:spawn_failed, :enoent}} =
+               Session.ensure(Session.new_id(), command: "probe")
+
+      assert {:error, {:spawn_failed, :enoent}} =
+               Session.ensure(Session.new_id(), command: "cat", cwd: Path.join(dir, "gone"))
+    end
+
+    test "PTY_ARGS splits on spaces" do
+      System.put_env("PTY_CMD", "cat")
+      System.put_env("PTY_ARGS", "-u  -n")
+      id = Session.new_id()
+      on_exit(fn -> Session.kill(id) end)
+
+      {:ok, pid} = Session.ensure(id)
+      assert Session.info(pid).command == "cat -u -n"
+    end
+  end
+
+  describe "stray input" do
+    test "a detach without an attach, a stray message, and a dead pid are all harmless" do
+      {_id, pid} = start_cat_session()
+
+      Session.detach(pid, self())
+      send(pid, :stray)
+      assert Session.info(pid).subscribers == 0
+
+      Process.exit(pid, :kill)
+      refute Session.info(pid)
+    end
+  end
+
   describe "spawn env" do
     test ":env reaches the child, and a caller entry overrides the default TERM" do
       marker = unique_marker()
@@ -239,21 +288,65 @@ defmodule Pty.SessionTest do
     end
   end
 
-  describe "child lifecycle" do
-    test "the session ends when its child process exits" do
-      id = Session.new_id()
-      System.put_env("PTY_CMD", "sh")
-      on_exit(fn -> Session.kill(id) end)
+  describe "lifecycle" do
+    test "a child exit reaches subscribers with its code, and ends the session" do
+      for {line, code} <- [{"exit", 0}, {"exit 3", 3}, {"kill -KILL $$", 137}] do
+        pid = start_sh_session([])
+        ref = Process.monitor(pid)
 
-      {:ok, pid} = Session.ensure(id)
+        Session.input(pid, line <> "\n")
+
+        assert_receive {:pty_exit, ^code}, @recv_deadline_ms
+        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @recv_deadline_ms
+      end
+    end
+
+    test "a reap hangs the child up, tells subscribers, and returns once it is gone" do
+      {id, pid} = start_cat_session()
       {:ok, _} = Session.attach(pid, self())
-      ref = Process.monitor(pid)
+      os_pid = :sys.get_state(pid).os_pid
 
-      Session.input(pid, "exit\n")
+      assert Session.kill(id) == :ok
+      assert_receive {:pty_exit, 129}
+      refute alive?(os_pid)
+    end
 
-      assert_receive {:pty_exit, _code}, @recv_deadline_ms
-      assert_receive {:DOWN, ^ref, :process, ^pid, _}, @recv_deadline_ms
-      refute find_session(id)
+    test "a child that ignores the hangup is killed with its process group, still a 129" do
+      pid = start_sh_session(args: ["-c", "trap '' HUP; sleep 30 & echo bg=$! .; wait"])
+      [_, bg] = Regex.run(~r/bg=(\d+) \./, recv_until_marker(" ."))
+      %{id: id, os_pid: os_pid} = :sys.get_state(pid)
+
+      assert Session.kill(id) == :ok
+      assert_receive {:pty_exit, 129}
+      refute alive?(os_pid)
+      refute alive?(String.to_integer(bg))
+    end
+
+    test "a crashed session still tells subscribers and takes its child along" do
+      {_id, pid} = start_cat_session()
+      {:ok, _} = Session.attach(pid, self())
+      os_pid = :sys.get_state(pid).os_pid
+
+      ExUnit.CaptureLog.capture_log(fn -> catch_exit(GenServer.call(pid, :bogus)) end)
+
+      assert_receive {:pty_exit, 129}, @recv_deadline_ms
+      refute alive?(os_pid)
+    end
+
+    test "a session killed outright still takes its child along" do
+      {_id, pid} = start_cat_session()
+      os_pid = :sys.get_state(pid).os_pid
+
+      Process.exit(pid, :kill)
+
+      poll_until(fn -> not alive?(os_pid) end)
+    end
+
+    test "erlexec going down ends the session with code 1" do
+      state = %{exec_pid: self(), exit: nil}
+
+      assert {:stop, :normal, %{exit: 1}} =
+               Session.handle_info({:EXIT, self(), :port_closed}, state)
     end
   end
 
@@ -291,6 +384,9 @@ defmodule Pty.SessionTest do
   end
 
   ## Helpers — session lifecycle
+
+  defp alive?(os_pid),
+    do: match?({_, 0}, System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true))
 
   defp start_cat_session do
     id = Session.new_id()

@@ -9,8 +9,12 @@ defmodule Pty.Session do
   running in the background and any UI can reattach by session id. Multiple
   clients may attach at once; they share one multiplexed terminal.
 
-  A session ends when its child process exits — or when it is explicitly reaped
-  (`kill/1`, `kill_all/0`, or shutdown), which SIGHUPs the child.
+  A session ends when its child process exits, or when it is reaped (`kill/1`,
+  `kill_all/0`, or shutdown). Reaping hangs the child up the way a closed
+  window does — SIGHUP, then SIGKILL to its process group 2 s later — and
+  returns once it is gone. Either way every subscriber receives `{:pty_exit,
+  code}`: the child's exit code, or `129` (hung up) for any reap. A session killed outright still takes its child along: erlexec links
+  the two, so no path leaves an orphaned PTY.
 
   Prefer the `Pty` facade; this module is the process itself.
 
@@ -66,6 +70,12 @@ defmodule Pty.Session do
   # Layered under the caller's :env, so a host may override TERM.
   @default_env [{"TERM", "xterm-256color"}]
   @default_rows 24
+  # SIGHUP, not SIGTERM: interactive shells (and claude) ignore SIGTERM but exit
+  # on hangup. A child still alive this many seconds later gets SIGKILL.
+  @hangup ~c"kill -HUP $CHILD_PID"
+  @hangup_grace_s 2
+  # What a reap reports: 128 + SIGHUP, as a shell reports a hung-up child.
+  @hangup_code 129
   @id_bytes 9
   @info_timeout_ms 1_000
   # Signal-death exit code: 128 + signal number (shell convention). The low 7
@@ -85,16 +95,10 @@ defmodule Pty.Session do
   session is actually started — an already-live id is returned untouched.
   """
   def ensure(id, opts \\ []) do
-    case Registry.lookup(@registry, id) do
-      [{pid, _}] ->
-        {:ok, pid}
-
-      [] ->
-        case DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, opts}}) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-          other -> other
-        end
+    # The via-name registers before init/1 runs, so a live id never spawns.
+    case DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, opts}}) do
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      other -> other
     end
   end
 
@@ -131,7 +135,7 @@ defmodule Pty.Session do
     |> Enum.sort_by(& &1.started)
   end
 
-  @doc "Terminate one session by id (kills its PTY). Returns :ok or {:error, :not_found}."
+  @doc "Reap one session by id; returns once its child is gone, or `{:error, :not_found}`."
   def kill(id) do
     case Registry.lookup(@registry, id) do
       [{pid, _}] -> DynamicSupervisor.terminate_child(@supervisor, pid)
@@ -141,7 +145,13 @@ defmodule Pty.Session do
 
   @doc "Terminate every session. Returns the number killed."
   def kill_all do
-    for %{id: id} <- list(), kill(id) == :ok, reduce: 0, do: (n -> n + 1)
+    # Straight from the supervisor: a session too busy to answer info/1 is
+    # reaped all the same.
+    @supervisor
+    |> DynamicSupervisor.which_children()
+    |> Enum.count(fn {_, pid, _, _} ->
+      DynamicSupervisor.terminate_child(@supervisor, pid) == :ok
+    end)
   end
 
   @doc "Metadata for one live session, or `nil` if it is gone."
@@ -161,8 +171,8 @@ defmodule Pty.Session do
 
   @impl true
   def init({id, opts}) do
-    # Trap exits so terminate/2 runs on supervisor shutdown (DynamicSupervisor
-    # sends :shutdown, which would otherwise kill us silently and orphan the PTY).
+    # Trap exits so terminate/2 runs on supervisor shutdown, and so the child's
+    # exit arrives as a message through the erlexec link.
     Process.flag(:trap_exit, true)
 
     cmd = resolve(opts, :command, "PTY_CMD", fn -> System.get_env("SHELL") || "/bin/sh" end)
@@ -170,58 +180,58 @@ defmodule Pty.Session do
     cols = resolve(opts, :cols, nil, fn -> @default_cols end)
     rows = resolve(opts, :rows, nil, fn -> @default_rows end)
     cap = resolve(opts, :scrollback, nil, fn -> @buffer_cap end)
+    cwd = resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)
+    env = env(opts)
     command_line = Enum.join([cmd | args], " ")
 
     # erlexec launches its child asynchronously: run/2 returns {:ok, ...} even for
-    # a missing binary and reports the failure later via the monitor DOWN. A live
-    # {:ok, pid} for a nonexistent command would violate ensure/2's contract, so we
-    # resolve the executable up front and refuse to start if it isn't on PATH.
-    case System.find_executable(cmd) do
-      nil ->
-        {:stop, {:spawn_failed, :enoent}}
+    # a missing binary or cwd and reports the failure later as an exit. A live
+    # {:ok, pid} for either would violate ensure/2's contract, so both are checked
+    # up front — the executable as the child would find it, against its own cwd
+    # and PATH.
+    exec_opts = [
+      :stdin,
+      :stdout,
+      # In pty mode stdout/stderr share one master fd; fold stderr into stdout
+      # so subscribers get the single coherent stream a real terminal carries.
+      {:stderr, :stdout},
+      # Linked, not monitored: if this process dies by any means, erlexec stops
+      # the child — the hangup, then SIGKILL to its whole process group.
+      :link,
+      {:kill, @hangup},
+      {:kill_timeout, @hangup_grace_s},
+      :kill_group,
+      :pty,
+      # A real terminal echoes typed input; keep echo on to match that.
+      :pty_echo,
+      # erlexec's winsz is {rows, cols} — the reverse of our cols/rows API.
+      {:winsz, {rows, cols}},
+      {:env, env},
+      {:cd, cwd}
+    ]
 
-      executable ->
-        argv = Enum.map([executable | args], &String.to_charlist/1)
+    with {:ok, executable} <- executable(cmd, cwd, env),
+         argv = [executable | Enum.map(args, &String.to_charlist/1)],
+         {:ok, exec_pid, os_pid} <- :exec.run(argv, exec_opts) do
+      Logger.info("session #{id} started (#{command_line})")
 
-        exec_opts = [
-          :stdin,
-          :stdout,
-          # In pty mode stdout/stderr share one master fd; fold stderr into stdout
-          # so subscribers get the single coherent stream a real terminal carries.
-          {:stderr, :stdout},
-          :monitor,
-          :pty,
-          # A real terminal echoes typed input; keep echo on to match that.
-          :pty_echo,
-          # erlexec's winsz is {rows, cols} — the reverse of our cols/rows API.
-          {:winsz, {rows, cols}},
-          {:env, env(opts)},
-          {:cd, resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)}
-        ]
-
-        case :exec.run(argv, exec_opts) do
-          {:ok, exec_pid, os_pid} ->
-            Logger.info("session #{id} started (#{command_line})")
-
-            state = %{
-              id: id,
-              exec_pid: exec_pid,
-              os_pid: os_pid,
-              command: command_line,
-              started: System.system_time(:second),
-              subs: %{},
-              buffer: :queue.new(),
-              buffer_bytes: 0,
-              cap: cap,
-              cols: cols,
-              rows: rows
-            }
-
-            {:ok, state}
-
-          {:error, reason} ->
-            {:stop, {:spawn_failed, reason}}
-        end
+      {:ok,
+       %{
+         id: id,
+         exec_pid: exec_pid,
+         os_pid: os_pid,
+         command: command_line,
+         started: System.system_time(:second),
+         subs: %{},
+         buffer: :queue.new(),
+         buffer_bytes: 0,
+         cap: cap,
+         exit: nil,
+         cols: cols,
+         rows: rows
+       }}
+    else
+      {:error, reason} -> {:stop, {:spawn_failed, reason}}
     end
   end
 
@@ -240,6 +250,23 @@ defmodule Pty.Session do
 
   defp from_os_env(:args, value), do: String.split(value, " ", trim: true)
   defp from_os_env(_key, value), do: value
+
+  # A path is taken against the child's cwd, a bare name searched on the PATH the
+  # child will see; a missing cwd finds nothing.
+  defp executable(cmd, cwd, env) do
+    path =
+      case List.keyfind(env, "PATH", 0) do
+        {_, path} when is_binary(path) -> path
+        _ -> System.get_env("PATH", "")
+      end
+
+    name = if cmd =~ "/", do: Path.expand(cmd, cwd), else: cmd
+
+    case File.dir?(cwd) && :os.find_executable(String.to_charlist(name), String.to_charlist(path)) do
+      false -> {:error, :enoent}
+      executable -> {:ok, executable}
+    end
+  end
 
   # erlexec's :env extends the inherited environment rather than replacing it, and
   # a `false` value unsets a variable the parent had — the only way to keep an
@@ -287,22 +314,15 @@ defmodule Pty.Session do
 
   @impl true
   def handle_cast({:detach, sub}, state) do
-    case Map.pop(state.subs, sub) do
-      {nil, _subs} ->
-        {:noreply, state}
-
-      {ref, subs} ->
-        Process.demonitor(ref, [:flush])
-        {:noreply, %{state | subs: subs}}
-    end
+    {ref, subs} = Map.pop(state.subs, sub)
+    ref && Process.demonitor(ref, [:flush])
+    {:noreply, %{state | subs: subs}}
   end
 
   def handle_cast({:input, data}, state) do
     :exec.send(state.os_pid, data)
     {:noreply, state}
   end
-
-  def handle_cast({:resize, cols, rows}, %{cols: cols, rows: rows} = state), do: {:noreply, state}
 
   def handle_cast({:resize, cols, rows}, state) do
     # winsz takes rows first, cols second — the reverse of our API.
@@ -316,23 +336,18 @@ defmodule Pty.Session do
     {:noreply, append(state, data)}
   end
 
-  # erlexec's monitor DOWN for the child: {:DOWN, OsPid::integer, :process, ExecPid, Reason}.
-  # OsPid is pinned to ours, so it never collides with a subscriber's monitor DOWN
-  # (whose second element is a reference, not our integer os_pid).
-  def handle_info({:DOWN, os_pid, :process, _exec_pid, reason}, %{os_pid: os_pid} = state) do
-    broadcast(state.subs, {:pty_exit, exit_code(reason)})
-    {:stop, :normal, state}
-  end
+  # The child exited: the link delivers its status. terminate/2 tells subscribers.
+  def handle_info({:EXIT, exec_pid, reason}, %{exec_pid: exec_pid} = state),
+    do: {:stop, :normal, %{state | exit: exit_code(reason)}}
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, %{state | subs: Map.delete(state.subs, pid)}}
   end
 
-  # erlexec (run + :monitor, no link) delivers only the DOWN above — no EXIT for the
-  # child. Keep a defensive catch-all for any stray message.
+  # A stray message (an EXIT from some other linked process) is no reason to die.
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Decode erlexec's DOWN reason to an integer exit code for {:pty_exit, code}.
+  # Decode erlexec's exit reason to an integer exit code for {:pty_exit, code}.
   defp exit_code(:normal), do: 0
 
   defp exit_code({:exit_status, raw}) do
@@ -342,6 +357,7 @@ defmodule Pty.Session do
     end
   end
 
+  # port_closed: erlexec itself went down, taking the child with it.
   defp exit_code(_other), do: 1
 
   # A chunk alone over the cap keeps a copy of its tail (a bare slice would pin
@@ -365,13 +381,20 @@ defmodule Pty.Session do
 
   defp trim(q, n, _cap), do: {q, n}
 
+  # Every end — exit, reap, crash — passes here, so every subscriber hears it
+  # once. A live child is stopped and awaited; the link guarantees its EXIT
+  # (port_closed at worst), and the supervisor's shutdown timeout bounds a reap.
+  # A reap reports @hangup_code whatever erlexec says: it overrides the status
+  # of any child it was asked to stop with 0, racing the signal's own status.
   @impl true
-  # SIGHUP, not SIGTERM: interactive shells (and claude) ignore SIGTERM but exit
-  # on hangup — the same signal a real terminal sends when its window closes.
-  def terminate(_reason, %{os_pid: os_pid}) when is_integer(os_pid) do
-    :exec.kill(os_pid, 1)
-    :ok
-  end
+  def terminate(_reason, %{exec_pid: exec_pid} = state) do
+    code =
+      state.exit ||
+        (
+          :exec.stop(exec_pid)
+          receive do: ({:EXIT, ^exec_pid, _reason} -> @hangup_code)
+        )
 
-  def terminate(_reason, _state), do: :ok
+    broadcast(state.subs, {:pty_exit, code})
+  end
 end

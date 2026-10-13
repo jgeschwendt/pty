@@ -117,7 +117,7 @@ defmodule Pty do
   @spec list() :: [info]
   defdelegate list, to: Session
 
-  @doc "Terminate a session by id, SIGHUPing its child."
+  @doc "Reap a session by id: SIGHUP its child, SIGKILL its group 2 s later; returns once it is gone."
   @spec reap(binary) :: :ok | {:error, :not_found}
   defdelegate reap(id), to: Session, as: :kill
 
