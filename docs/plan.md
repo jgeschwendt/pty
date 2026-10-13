@@ -19,8 +19,11 @@ session out of process; the host owns endpoint, auth and page.
 
 - A session outlives every client; only child exit or a reap ends it.
 - Every session end reaches subscribers as one `{:pty_exit, code}` (`129` for
-  a reap or crash); a session's death, however abrupt, takes its child — the
-  erlexec link stops it: SIGHUP, then SIGKILL to the group after 2 s.
+  a reap or crash). A reap SIGHUPs, relays the child's last output, and after
+  2 s lets erlexec stop it (SIGTERM, SIGKILL 1 s on, to the group); a
+  session's death, however abrupt, takes its child through the erlexec link.
+- Reaps never go through the supervisor (`GenServer.stop`), so a slow hangup
+  never blocks `start/2`; `reap_all/0` hangs up concurrently.
 - `start/2` is idempotent and fail-closed on a missing binary or cwd, resolved
   as the child would (`:cwd`, `:env` PATH).
 - A bad client frame is `:ignore`, never a crashed session.
@@ -38,11 +41,19 @@ session out of process; the host owns endpoint, auth and page.
   `/dev/ptmx`; anything spliced in between breaks the exclusion).
 - erlexec reports status `0` for any child it was asked to stop, racing the
   signal's own status — hence the fixed `129` for a reap.
+- exec-port's SIGHUP handler survives in a fork until `execve`: a reap within
+  a child's first milliseconds misses the hangup and waits out the 2 s grace.
+  Tests clean up with `drop/1` (outright kill) for that reason. The hangup is
+  deliberately not re-sent: a second HUP may cut short a child's own cleanup.
+- erlexec runs a `{:kill, cmd}` under the BEAM's `$SHELL -c`, so a kill
+  command is non-portable (nushell); the hangup is sent by `:exec.kill/2`.
 - `Origin` is compared with `Host`, so DNS rebinding is outside the check.
 
 ## Next
 
 1. No CI and no pre-push hook yet.
 2. `pty.js` has no behavioural test — `asset_test` only greps it.
-3. `list/0` drops a session busy past the 1 s info timeout; `reap_all/0`
-   reaps sequentially, so N HUP-ignoring children take 2 N s.
+3. `list/0` drops a session busy past the 1 s info timeout.
+4. Close `1000` is also what Bandit sends on its own shutdown, which `pty.js`
+   takes as final; `1011` is retried forever even for a permanent spawn
+   failure (bad `:command`). Both want distinct private codes — a wire change.

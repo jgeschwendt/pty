@@ -81,9 +81,10 @@ defmodule Pty do
   def attach(session, subscriber \\ self()) do
     with {:ok, pid} <- resolve(session), do: Session.attach(pid, subscriber)
   catch
-    # A pid that died, or a session that ended before the call landed. A
-    # timeout or a crash still exits: the session may yet be alive.
-    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> {:error, :not_found}
+    # Any exit but a timeout means the session is gone: dead already, or it
+    # ended — exit, reap or crash — before the call landed. A timeout still
+    # exits: the session may yet be alive.
+    :exit, {reason, _} when reason != :timeout -> {:error, :not_found}
   end
 
   @doc "Unsubscribe `subscriber`. The PTY keeps running."
@@ -117,9 +118,9 @@ defmodule Pty do
   @spec list() :: [info]
   defdelegate list, to: Session
 
-  @doc "Reap a session by id: SIGHUP its child, SIGKILL its group 2 s later; returns once it is gone."
-  @spec reap(binary) :: :ok | {:error, :not_found}
-  defdelegate reap(id), to: Session, as: :kill
+  @doc "Reap a session: hang its child up (see `Pty.Session`); returns once it is gone."
+  @spec reap(session) :: :ok | {:error, :not_found}
+  defdelegate reap(session), to: Session, as: :kill
 
   @doc "Terminate every session; returns how many were reaped."
   @spec reap_all() :: non_neg_integer

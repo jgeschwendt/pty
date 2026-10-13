@@ -109,24 +109,22 @@ defmodule PtyTest do
   describe "reap/1 + reap_all/0 + list/0" do
     test "reaping removes sessions from the listing" do
       id = start_session()
-      {:ok, pid} = Pty.lookup(id)
-      ref = Process.monitor(pid)
 
       assert Enum.any?(Pty.list(), &(&1.id == id))
       assert Pty.reap(id) == :ok
-      assert_receive {:DOWN, ^ref, :process, ^pid, _}, @recv_deadline_ms
+      refute Enum.any?(Pty.list(), &(&1.id == id))
 
       start_session()
       start_session()
       assert Pty.reap_all() >= 2
-      poll_until(fn -> Pty.list() == [] end)
+      assert Pty.list() == []
     end
   end
 
   defp start_session(opts \\ []) do
     id = Pty.new_id()
     {:ok, _pid} = Pty.start(id, opts)
-    on_exit(fn -> Pty.reap(id) end)
+    on_exit(fn -> drop(id) end)
     id
   end
 end

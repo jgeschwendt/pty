@@ -26,7 +26,8 @@ defmodule Pty.Socket do
     * server → client: binary frames of raw PTY output, fed straight to xterm.js;
       the first is the scrollback.
     * close `1000`: the session ended (its child exited or it was reaped).
-    * close `4404`: a reattach found no session — it ended while away.
+    * close `4404`: no session to attach — a reattach found none, or the one
+      found ended as it attached.
     * close `1011`: the session could not be started or attached; transient.
 
   The browser half lives in `priv/static/pty.js`.
@@ -49,8 +50,12 @@ defmodule Pty.Socket do
       Process.monitor(session)
       {:push, {:binary, buffer}, %{session: session}}
     else
-      :error -> close(@ws_close_not_found, "session not found")
-      _ -> close(@ws_close_internal_error, "session unavailable")
+      # Never there, or ending as we attached: either way, gone.
+      not_found when not_found in [:error, {:error, :not_found}] ->
+        close(@ws_close_not_found, "session not found")
+
+      _ ->
+        close(@ws_close_internal_error, "session unavailable")
     end
   end
 

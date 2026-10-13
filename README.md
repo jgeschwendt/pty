@@ -69,7 +69,7 @@ Pty.reap(id)                             # hang the child up, end the session
 | `write/2`              | Write to the PTY's stdin.                                         |
 | `resize/3`             | Resize the PTY (SIGWINCH to the child).                           |
 | `info/1`, `list/0`     | Metadata: command, uptime, subscribers, buffer size, dimensions.  |
-| `reap/1`, `reap_all/0` | End sessions: SIGHUP, then SIGKILL to the group 2 s later.        |
+| `reap/1`, `reap_all/0` | End sessions by hanging up (see Notes); `reap_all` concurrently.  |
 | `asset_dir/0`          | Where `pty.js` lives, for `Plug.Static` or a copy step.           |
 
 Every function takes a session as an **id** or a **pid**; an id naming no live
@@ -239,10 +239,13 @@ log or the registry, but an id is a name, not a credential.
   snapshot; for exactness, parse terminal state server-side and redraw from
   that.
 - **Reaping hangs up**: SIGHUP, the signal a real terminal sends when its
-  window closes (interactive shells ignore SIGTERM), then SIGKILL to the
-  child's process group 2 s later. `reap/1` returns once the child is gone, and
-  subscribers get `{:pty_exit, 129}`. erlexec links each child to its session,
-  so even a session killed outright takes its child along — no orphaned PTYs.
+  window closes (interactive shells ignore SIGTERM). A child still alive 2 s
+  later gets SIGTERM, then SIGKILL 1 s after, both to its process group.
+  Whatever it prints on the way out still reaches subscribers, then
+  `{:pty_exit, 129}`; `reap/1` returns once the child is gone. erlexec links
+  each child to its session, so even a session killed outright takes its child
+  along — no orphaned PTYs. A reap in a child's first instant, before it has
+  exec'd, can miss the hangup and take the escalation path.
 
 ## Development
 

@@ -11,10 +11,12 @@ defmodule Pty.Session do
 
   A session ends when its child process exits, or when it is reaped (`kill/1`,
   `kill_all/0`, or shutdown). Reaping hangs the child up the way a closed
-  window does — SIGHUP, then SIGKILL to its process group 2 s later — and
-  returns once it is gone. Either way every subscriber receives `{:pty_exit,
-  code}`: the child's exit code, or `129` (hung up) for any reap. A session killed outright still takes its child along: erlexec links
-  the two, so no path leaves an orphaned PTY.
+  window does — SIGHUP, and a child still alive 2 s later gets SIGTERM, then
+  SIGKILL 1 s after, both to its process group — relays what it prints on the
+  way out, and returns once it is gone. Either way every subscriber receives
+  `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap.
+  A session killed outright still takes its child along: erlexec links the
+  two, so no path leaves an orphaned PTY.
 
   Prefer the `Pty` facade; this module is the process itself.
 
@@ -70,10 +72,11 @@ defmodule Pty.Session do
   # Layered under the caller's :env, so a host may override TERM.
   @default_env [{"TERM", "xterm-256color"}]
   @default_rows 24
-  # SIGHUP, not SIGTERM: interactive shells (and claude) ignore SIGTERM but exit
-  # on hangup. A child still alive this many seconds later gets SIGKILL.
-  @hangup ~c"kill -HUP $CHILD_PID"
-  @hangup_grace_s 2
+  # SIGHUP first: interactive shells (and claude) ignore SIGTERM but exit on
+  # hangup. Past the grace erlexec stops the child: SIGTERM, then SIGKILL after
+  # @kill_timeout_s. Both stay under the supervisor's 5 s shutdown.
+  @hangup_grace_ms 2_000
+  @kill_timeout_s 1
   # What a reap reports: 128 + SIGHUP, as a shell reports a hung-up child.
   @hangup_code 129
   @id_bytes 9
@@ -135,23 +138,28 @@ defmodule Pty.Session do
     |> Enum.sort_by(& &1.started)
   end
 
-  @doc "Reap one session by id; returns once its child is gone, or `{:error, :not_found}`."
-  def kill(id) do
-    case Registry.lookup(@registry, id) do
-      [{pid, _}] -> DynamicSupervisor.terminate_child(@supervisor, pid)
-      [] -> {:error, :not_found}
-    end
+  @doc "Reap one session by id or pid; returns once its child is gone, or `{:error, :not_found}`."
+  def kill(id) when is_binary(id) do
+    with :error <- whereis(id), do: {:error, :not_found}, else: ({:ok, pid} -> kill(pid))
   end
 
-  @doc "Terminate every session. Returns the number killed."
+  # Stopped directly, not through the supervisor, which would block every
+  # start/2 behind a hangup.
+  def kill(pid) do
+    GenServer.stop(pid, :shutdown)
+  catch
+    :exit, _ -> {:error, :not_found}
+  end
+
+  @doc "Reap every session at once. Returns the number reaped."
   def kill_all do
     # Straight from the supervisor: a session too busy to answer info/1 is
-    # reaped all the same.
+    # reaped all the same, and every hangup runs concurrently.
     @supervisor
     |> DynamicSupervisor.which_children()
-    |> Enum.count(fn {_, pid, _, _} ->
-      DynamicSupervisor.terminate_child(@supervisor, pid) == :ok
-    end)
+    |> Enum.map(fn {_, pid, _, _} -> Task.async(fn -> kill(pid) end) end)
+    |> Task.await_many(:infinity)
+    |> Enum.count(&(&1 == :ok))
   end
 
   @doc "Metadata for one live session, or `nil` if it is gone."
@@ -196,10 +204,9 @@ defmodule Pty.Session do
       # so subscribers get the single coherent stream a real terminal carries.
       {:stderr, :stdout},
       # Linked, not monitored: if this process dies by any means, erlexec stops
-      # the child — the hangup, then SIGKILL to its whole process group.
+      # the child — SIGTERM, then SIGKILL, to its whole process group.
       :link,
-      {:kill, @hangup},
-      {:kill_timeout, @hangup_grace_s},
+      {:kill_timeout, @kill_timeout_s},
       :kill_group,
       :pty,
       # A real terminal echoes typed input; keep echo on to match that.
@@ -260,6 +267,8 @@ defmodule Pty.Session do
         _ -> System.get_env("PATH", "")
       end
 
+    # PATH entries are taken against the child's cwd too ("" is the cwd itself).
+    path = path |> String.split(":") |> Enum.map_join(":", &Path.expand(&1, cwd))
     name = if cmd =~ "/", do: Path.expand(cmd, cwd), else: cmd
 
     case File.dir?(cwd) && :os.find_executable(String.to_charlist(name), String.to_charlist(path)) do
@@ -324,6 +333,9 @@ defmodule Pty.Session do
     {:noreply, state}
   end
 
+  # Unchanged dims skip winsz, a synchronous round trip through erlexec.
+  def handle_cast({:resize, cols, rows}, %{cols: cols, rows: rows} = state), do: {:noreply, state}
+
   def handle_cast({:resize, cols, rows}, state) do
     # winsz takes rows first, cols second — the reverse of our API.
     :exec.winsz(state.os_pid, rows, cols)
@@ -382,19 +394,35 @@ defmodule Pty.Session do
   defp trim(q, n, _cap), do: {q, n}
 
   # Every end — exit, reap, crash — passes here, so every subscriber hears it
-  # once. A live child is stopped and awaited; the link guarantees its EXIT
-  # (port_closed at worst), and the supervisor's shutdown timeout bounds a reap.
-  # A reap reports @hangup_code whatever erlexec says: it overrides the status
-  # of any child it was asked to stop with 0, racing the signal's own status.
+  # once. A live child is hung up and awaited; the link guarantees its EXIT
+  # (port_closed at worst). A reap reports @hangup_code whatever erlexec says:
+  # it overrides the status of any child it stopped with 0.
   @impl true
-  def terminate(_reason, %{exec_pid: exec_pid} = state) do
+  def terminate(_reason, state) do
     code =
       state.exit ||
         (
-          :exec.stop(exec_pid)
-          receive do: ({:EXIT, ^exec_pid, _reason} -> @hangup_code)
+          :exec.kill(state.os_pid, :sighup)
+          Process.send_after(self(), :hangup_grace, @hangup_grace_ms)
+          hang_up(state)
         )
 
     broadcast(state.subs, {:pty_exit, code})
+  end
+
+  # Relays what the child prints on its way out; past the grace, stops it.
+  defp hang_up(%{exec_pid: exec_pid, os_pid: os_pid} = state) do
+    receive do
+      {:stdout, ^os_pid, data} ->
+        broadcast(state.subs, {:pty_data, data})
+        hang_up(state)
+
+      :hangup_grace ->
+        :exec.stop(exec_pid)
+        hang_up(state)
+
+      {:EXIT, ^exec_pid, _reason} ->
+        @hangup_code
+    end
   end
 end

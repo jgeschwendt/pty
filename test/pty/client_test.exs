@@ -49,7 +49,7 @@ defmodule Pty.ClientTest do
       {:ok, pid} = Session.ensure(id)
 
       on_exit(fn ->
-        Session.kill(id)
+        drop(id)
         restore_env("PTY_CMD", prev_cmd)
       end)
 

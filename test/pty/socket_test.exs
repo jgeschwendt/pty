@@ -170,7 +170,7 @@ defmodule Pty.SocketTest do
 
   defp fresh_id do
     id = Session.new_id()
-    on_exit(fn -> Session.kill(id) end)
+    on_exit(fn -> drop(id) end)
     id
   end
 

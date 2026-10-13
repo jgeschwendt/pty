@@ -14,6 +14,11 @@ defmodule Pty.TestHelpers do
 
   def deadline(ms), do: now() + ms
 
+  # Test cleanup: kill a session outright — the link stops its child at once.
+  # A reap would wait out the hangup grace for a child that missed its SIGHUP
+  # by being reaped before it had exec'd.
+  def drop(id), do: with({:ok, pid} <- Session.whereis(id), do: Process.exit(pid, :kill))
+
   def find_session(id), do: Enum.find(Session.list(), &(&1.id == id))
 
   def now, do: System.monotonic_time(:millisecond)

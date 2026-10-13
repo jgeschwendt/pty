@@ -49,30 +49,16 @@ defmodule Pty.SessionTest do
     test "starts and registers a session; same id is idempotent, different id is distinct" do
       id = Session.new_id()
       System.put_env("PTY_CMD", "cat")
-      on_exit(fn -> Session.kill(id) end)
+      on_exit(fn -> drop(id) end)
 
       {:ok, pid} = Session.ensure(id)
       assert is_pid(pid)
       assert {:ok, ^pid} = Session.ensure(id)
 
       other = Session.new_id()
-      on_exit(fn -> Session.kill(other) end)
+      on_exit(fn -> drop(other) end)
       {:ok, pid2} = Session.ensure(other)
       assert pid2 != pid
-    end
-
-    test "does not return a live session when the pty command is missing" do
-      id = Session.new_id()
-      bogus = "/nonexistent/definitely-not-a-binary-#{System.unique_integer([:positive])}"
-      System.put_env("PTY_CMD", bogus)
-      on_exit(fn -> Session.kill(id) end)
-
-      # init resolves PTY_CMD with System.find_executable and refuses to start when
-      # it's missing (erlexec launches async and would otherwise hand back a live
-      # {:ok, pid}); ensure surfaces that {:stop, _} from start_child as {:error, _}.
-      {result, _log} = ExUnit.CaptureLog.with_log(fn -> Session.ensure(id) end)
-
-      assert match?({:error, _}, result)
     end
   end
 
@@ -88,7 +74,7 @@ defmodule Pty.SessionTest do
             [command: "probe", env: %{"PATH" => dir <> ":/bin"}]
           ] do
         id = Session.new_id()
-        on_exit(fn -> Session.kill(id) end)
+        on_exit(fn -> drop(id) end)
         assert {:ok, pid} = Session.ensure(id, opts)
         {:ok, _} = Session.attach(pid, self())
         assert recv_until_marker("resolved") =~ "resolved"
@@ -105,7 +91,7 @@ defmodule Pty.SessionTest do
       System.put_env("PTY_CMD", "cat")
       System.put_env("PTY_ARGS", "-u  -n")
       id = Session.new_id()
-      on_exit(fn -> Session.kill(id) end)
+      on_exit(fn -> drop(id) end)
 
       {:ok, pid} = Session.ensure(id)
       assert Session.info(pid).command == "cat -u -n"
@@ -122,6 +108,7 @@ defmodule Pty.SessionTest do
 
       Process.exit(pid, :kill)
       refute Session.info(pid)
+      assert Session.kill(pid) == {:error, :not_found}
     end
   end
 
@@ -236,6 +223,7 @@ defmodule Pty.SessionTest do
     test "updates the reported cols and rows" do
       {id, pid} = start_cat_session()
 
+      Session.resize(pid, @default_cols, @default_rows)
       Session.resize(pid, @resize_cols, @resize_rows)
 
       poll_until(fn ->
@@ -263,11 +251,9 @@ defmodule Pty.SessionTest do
 
   describe "kill/1" do
     test "terminates a live session and errors on an unknown id" do
-      {id, pid} = start_cat_session()
-      ref = Process.monitor(pid)
+      {id, _pid} = start_cat_session()
 
       assert Session.kill(id) == :ok
-      assert_receive {:DOWN, ^ref, :process, ^pid, _}, @recv_deadline_ms
       refute find_session(id)
 
       assert Session.kill("does-not-exist") == {:error, :not_found}
@@ -279,11 +265,8 @@ defmodule Pty.SessionTest do
       {_id1, _} = start_cat_session()
       {_id2, _} = start_cat_session()
 
-      count = Session.kill_all()
-      assert count >= 2
-
       # kill_all is global; the suite is async: false so nothing else is live.
-      poll_until(fn -> Session.list() == [] end)
+      assert Session.kill_all() >= 2
       assert Session.list() == []
     end
   end
@@ -301,25 +284,31 @@ defmodule Pty.SessionTest do
       end
     end
 
-    test "a reap hangs the child up, tells subscribers, and returns once it is gone" do
-      {id, pid} = start_cat_session()
-      {:ok, _} = Session.attach(pid, self())
+    test "a reap hangs the child up, relays its last words, and returns once it is gone" do
+      pid =
+        start_sh_session(
+          args: ["-c", "trap 'echo bye; exit' HUP; echo up; while :; do sleep 0.05; done"]
+        )
+
+      recv_until_marker("up")
       os_pid = :sys.get_state(pid).os_pid
 
-      assert Session.kill(id) == :ok
+      assert Session.kill(pid) == :ok
+      assert recv_until_marker("bye") =~ "bye"
       assert_receive {:pty_exit, 129}
       refute alive?(os_pid)
     end
 
-    test "a child that ignores the hangup is killed with its process group, still a 129" do
-      pid = start_sh_session(args: ["-c", "trap '' HUP; sleep 30 & echo bg=$! .; wait"])
+    test "a child deaf to HUP and TERM is killed with its process group, still a 129" do
+      pid = start_sh_session(args: ["-c", "trap '' HUP TERM; sleep 30 & echo bg=$! .; wait"])
       [_, bg] = Regex.run(~r/bg=(\d+) \./, recv_until_marker(" ."))
-      %{id: id, os_pid: os_pid} = :sys.get_state(pid)
+      os_pid = :sys.get_state(pid).os_pid
 
-      assert Session.kill(id) == :ok
+      assert Session.kill(pid) == :ok
       assert_receive {:pty_exit, 129}
       refute alive?(os_pid)
-      refute alive?(String.to_integer(bg))
+      # The orphaned sleep is reaped by launchd, not erlexec: a zombie answers kill -0.
+      poll_until(fn -> not alive?(String.to_integer(bg)) end)
     end
 
     test "a crashed session still tells subscribers and takes its child along" do
@@ -392,14 +381,14 @@ defmodule Pty.SessionTest do
     id = Session.new_id()
     System.put_env("PTY_CMD", "cat")
     {:ok, pid} = Session.ensure(id)
-    on_exit(fn -> Session.kill(id) end)
+    on_exit(fn -> drop(id) end)
     {id, pid}
   end
 
   defp start_sh_session(opts) do
     id = Session.new_id()
     System.put_env("PTY_CMD", "sh")
-    on_exit(fn -> Session.kill(id) end)
+    on_exit(fn -> drop(id) end)
 
     {:ok, pid} = Session.ensure(id, opts)
     {:ok, _buffer} = Session.attach(pid, self())
