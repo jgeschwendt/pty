@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+# `check` is the required status check on main (ruleset `main`); renaming the
+# job renames the check and stalls every PR and the merge queue.
+jobs:
+  check:
+    # ubuntu-24.04: mise takes Erlang from Bob's Ubuntu builds (as bifrost).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v2
+      - run: mix local.hex --force && mix local.rebar --force
+      - run: mix deps.get
+      - run: mix test
