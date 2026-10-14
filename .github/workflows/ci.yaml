@@ -17,4 +17,7 @@ jobs:
       - uses: jdx/mise-action@v2
       - run: mix local.hex --force && mix local.rebar --force
       - run: mix deps.get
-      - run: mix test
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      # --cover enforces mix.exs's 100 % threshold; plain `mix test` never did.
+      - run: mix test --cover

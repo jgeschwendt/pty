@@ -52,6 +52,5 @@ session out of process; the host owns endpoint, auth and page.
 
 ## Next
 
-1. No pre-push hook yet.
-2. `pty.js` has no behavioural test — `asset_test` only greps it.
-3. `list/0` drops a session busy past the 1 s info timeout.
+1. `pty.js` has no behavioural test — `asset_test` only greps it.
+2. `list/0` drops a session busy past the 1 s info timeout.
