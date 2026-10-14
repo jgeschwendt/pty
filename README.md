@@ -53,7 +53,7 @@ id = Pty.new_id()                        # url-safe, 12 chars
 {:ok, scrollback} = Pty.attach(session)  # subscriber defaults to self()
 Pty.write(session, "ls\n")
 Pty.resize(session, 120, 40)
-# receive {:pty_data, bytes} … and once, {:pty_exit, code}
+# receive {:pty_data, bytes} … and once, {:pty_exit, code} (none if killed outright)
 Pty.detach(session)                      # PTY keeps running
 Pty.reap(id)                             # hang the child up, end the session
 ```
@@ -92,8 +92,10 @@ first (even empty — it is the "attached" signal):
 
 The server closes `4000` when the session ends, `4404` when a reconnect
 (`?reattach`) finds no session, `4422` when the spawn is refused (`:command` or
-`:cwd` not found — permanent), and `1011` when a session cannot be started or
-attached for any other reason (transient). `1000` is never the session's: Bandit
+`:cwd` not found, or erlexec rejecting an option such as a bad `:cols` —
+permanent), and `1011` for any other start failure, retried because pty cannot
+tell a passing failure (resources) from a fault (an option that crashes init);
+the host's logs show which. `1000` is never the session's: Bandit
 sends it on its own shutdown, so a client treats it as transport loss.
 
 Malformed frames (bad JSON, unknown type, out-of-range or non-integer

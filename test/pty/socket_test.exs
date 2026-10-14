@@ -57,16 +57,18 @@ defmodule Pty.SocketTest do
     end
 
     test "a refused spawn closes 4422 — permanent, the client stops" do
-      System.put_env("PTY_CMD", "/nonexistent/definitely-not-a-binary")
+      # A missing binary (:enoent), and an option erlexec rejects (:invalid_option).
+      for opts <- [[command: "/nonexistent/definitely-not-a-binary"], [cols: "x"]] do
+        {result, _log} =
+          ExUnit.CaptureLog.with_log(fn ->
+            Socket.init(%{session_id: fresh_id(), session_opts: opts})
+          end)
 
-      {result, _log} =
-        ExUnit.CaptureLog.with_log(fn -> Socket.init(%{session_id: fresh_id()}) end)
-
-      assert {:stop, :normal, {@ws_close_refused, "spawn refused (:enoent)"}, %{session: nil}} =
-               result
+        assert {:stop, :normal, {@ws_close_refused, "spawn refused"}, %{session: nil}} = result
+      end
     end
 
-    test "any other start failure closes 1011 — transient, the client retries" do
+    test "any other start failure closes 1011 and the client retries" do
       # An argument that is no string crashes init/1 past the spawn check.
       {result, _log} =
         ExUnit.CaptureLog.with_log(fn ->

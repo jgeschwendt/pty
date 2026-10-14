@@ -31,8 +31,10 @@ defmodule Pty.Socket do
     * close `4404`: no session to attach — a reattach found none, or the one
       found ended as it attached.
     * close `4422`: the spawn was refused — `:command` or `:cwd` not found, or
-      erlexec rejected the spec. Permanent: retrying cannot help.
-    * close `1011`: the session could not be started or attached; transient.
+      erlexec rejected an option (e.g. a bad `:cols`). Permanent.
+    * close `1011`: any other start failure. Retried: pty cannot tell a passing
+      failure (resources) from a fault (an option that crashes init); the
+      host's logs show which.
 
   The browser half lives in `priv/static/pty.js`.
   """
@@ -59,8 +61,11 @@ defmodule Pty.Socket do
       not_found when not_found in [:error, {:error, :not_found}] ->
         close(@ws_close_not_found, "session not found")
 
-      {:error, {:spawn_failed, reason}} ->
-        close(@ws_close_refused, "spawn refused (#{inspect(reason)})")
+      # Only the deterministic refusals; a fixed reason fits RFC 6455's 123
+      # bytes and leaks no host config.
+      {:error, {:spawn_failed, reason}}
+      when reason == :enoent or elem(reason, 0) == :invalid_option ->
+        close(@ws_close_refused, "spawn refused")
 
       _ ->
         close(@ws_close_internal_error, "session unavailable")

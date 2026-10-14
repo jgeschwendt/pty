@@ -14,7 +14,9 @@ defmodule Pty.Session do
   window does — SIGHUP, and a child still alive 2 s later gets SIGTERM, then
   SIGKILL 1 s after, both to its process group — relays what it prints on the
   way out, and returns once it is gone. Either way every subscriber receives
-  `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap.
+  `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap —
+  unless the session is killed outright (`:kill`, or the supervisor's brutal
+  kill past its shutdown timeout), which skips `terminate/2`; monitor it.
   A session killed outright still takes its child along: erlexec links the
   two, so no path leaves an orphaned PTY.
 
@@ -117,7 +119,8 @@ defmodule Pty.Session do
   def kill(id) when is_binary(id), do: kill({:via, Registry, {@registry, id}})
 
   # Stopped directly, not through the supervisor, which would block every
-  # ensure/2 behind a hangup. A gone session exits :noproc, caught here.
+  # ensure/2 behind a hangup. Any exit — gone already, or ended mid-stop — is
+  # caught as not found.
   def kill(pid) do
     GenServer.stop(pid, :shutdown)
   catch

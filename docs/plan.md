@@ -19,7 +19,8 @@ session out of process; the host owns endpoint, auth and page.
 
 - A session outlives every client; only child exit or a reap ends it.
 - Every session end reaches subscribers as one `{:pty_exit, code}` (`129` for
-  a reap or crash). A reap SIGHUPs, relays the child's last output, and after
+  a reap or crash) — except an untrappable kill, which skips `terminate/2`;
+  `Pty.Socket` monitors for that. A reap SIGHUPs, relays the child's last output, and after
   2 s lets erlexec stop it (SIGTERM, SIGKILL 1 s on, to the group); a
   session's death, however abrupt, takes its child through the erlexec link.
 - Reaps never go through the supervisor (`GenServer.stop`), so a slow hangup

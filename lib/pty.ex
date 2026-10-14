@@ -75,7 +75,8 @@ defmodule Pty do
   Subscribe `subscriber` to the session's live feed.
 
   Returns the scrollback buffer to replay before the feed. The subscriber then
-  receives `{:pty_data, binary}` and, once, `{:pty_exit, code}`.
+  receives `{:pty_data, binary}` and, once, `{:pty_exit, code}` — unless the
+  session is killed outright; monitor it to cover that.
   """
   @spec attach(session, pid) :: {:ok, binary} | {:error, :not_found}
   def attach(session, subscriber \\ self()) do
