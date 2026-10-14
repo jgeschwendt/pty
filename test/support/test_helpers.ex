@@ -1,7 +1,7 @@
 defmodule Pty.TestHelpers do
   @moduledoc """
-  Helpers shared across Pty test modules: env save/restore, session lookup,
-  bounded polling, and pty-output collection.
+  Helpers shared across Pty test modules: session cleanup and lookup, env
+  restore, unique markers, bounded polling, and pty-output collection.
   """
 
   import ExUnit.Assertions
@@ -12,16 +12,12 @@ defmodule Pty.TestHelpers do
   @poll_tries 80
   @recv_deadline_ms 2_000
 
-  def deadline(ms), do: now() + ms
-
   # Test cleanup: kill a session outright — the link stops its child at once.
   # A reap would wait out the hangup grace for a child that missed its SIGHUP
   # by being reaped before it had exec'd.
   def drop(id), do: with({:ok, pid} <- Session.whereis(id), do: Process.exit(pid, :kill))
 
   def find_session(id), do: Enum.find(Session.list(), &(&1.id == id))
-
-  def now, do: System.monotonic_time(:millisecond)
 
   def restore_env(key, val),
     do: if(val, do: System.put_env(key, val), else: System.delete_env(key))

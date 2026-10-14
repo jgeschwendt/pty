@@ -64,32 +64,16 @@ defmodule Pty.Session do
 
   @registry Pty.SessionRegistry
   @supervisor Pty.SessionSupervisor
-  # Replayed to reconstruct the terminal on (re)attach. Bounded deque of raw
-  # output chunks (replay is chunk-aligned, ≤ cap; a chunk over the cap alone
-  # is cut to its tail).
-  @buffer_cap 256_000
-  @default_cols 80
-  # Layered under the caller's :env, so a host may override TERM.
-  @default_env [{"TERM", "xterm-256color"}]
-  @default_rows 24
   # SIGHUP first: interactive shells (and claude) ignore SIGTERM but exit on
   # hangup. Past the grace erlexec stops the child: SIGTERM, then SIGKILL after
   # @kill_timeout_s. Both stay under the supervisor's 5 s shutdown.
   @hangup_grace_ms 2_000
   @kill_timeout_s 1
-  # What a reap reports: 128 + SIGHUP, as a shell reports a hung-up child.
-  @hangup_code 129
-  @id_bytes 9
-  @info_timeout_ms 1_000
-  # Signal-death exit code: 128 + signal number (shell convention). The low 7
-  # bits of erlexec's raw wait(2) status carry the signal number (WTERMSIG).
-  @signal_exit_base 128
-  @signal_status_mask 0x7F
 
   ## Client API
 
   @doc "A fresh, URL-safe session id."
-  def new_id, do: @id_bytes |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+  def new_id, do: 9 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
   @doc """
   Return the running session for `id`, starting it if needed.
@@ -99,10 +83,9 @@ defmodule Pty.Session do
   """
   def ensure(id, opts \\ []) do
     # The via-name registers before init/1 runs, so a live id never spawns.
-    case DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, opts}}) do
-      {:error, {:already_started, pid}} -> {:ok, pid}
-      other -> other
-    end
+    with {:error, {:already_started, pid}} <-
+           DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, opts}}),
+         do: {:ok, pid}
   end
 
   @doc "Look up a live session by id."
@@ -132,19 +115,16 @@ defmodule Pty.Session do
   @doc "Metadata for every live session, oldest first."
   def list do
     @registry
-    |> Registry.select([{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
-    |> Enum.map(fn {_id, pid} -> info(pid) end)
-    |> Enum.reject(&is_nil/1)
+    |> Registry.select([{{:_, :"$1", :_}, [], [:"$1"]}])
+    |> Enum.flat_map(&List.wrap(info(&1)))
     |> Enum.sort_by(& &1.started)
   end
 
   @doc "Reap one session by id or pid; returns once its child is gone, or `{:error, :not_found}`."
-  def kill(id) when is_binary(id) do
-    with :error <- whereis(id), do: {:error, :not_found}, else: ({:ok, pid} -> kill(pid))
-  end
+  def kill(id) when is_binary(id), do: kill({:via, Registry, {@registry, id}})
 
   # Stopped directly, not through the supervisor, which would block every
-  # start/2 behind a hangup.
+  # ensure/2 behind a hangup. A gone session exits :noproc, caught here.
   def kill(pid) do
     GenServer.stop(pid, :shutdown)
   catch
@@ -164,7 +144,7 @@ defmodule Pty.Session do
 
   @doc "Metadata for one live session, or `nil` if it is gone."
   def info(pid) when is_pid(pid) do
-    GenServer.call(pid, :info, @info_timeout_ms)
+    GenServer.call(pid, :info, 1_000)
   catch
     :exit, _ -> nil
   end
@@ -185,9 +165,9 @@ defmodule Pty.Session do
 
     cmd = resolve(opts, :command, "PTY_CMD", fn -> System.get_env("SHELL") || "/bin/sh" end)
     args = resolve(opts, :args, "PTY_ARGS", fn -> [] end) |> List.wrap()
-    cols = resolve(opts, :cols, nil, fn -> @default_cols end)
-    rows = resolve(opts, :rows, nil, fn -> @default_rows end)
-    cap = resolve(opts, :scrollback, nil, fn -> @buffer_cap end)
+    cols = resolve(opts, :cols, nil, fn -> 80 end)
+    rows = resolve(opts, :rows, nil, fn -> 24 end)
+    cap = resolve(opts, :scrollback, nil, fn -> 256_000 end)
     cwd = resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)
     env = env(opts)
     command_line = Enum.join([cmd | args], " ")
@@ -250,13 +230,13 @@ defmodule Pty.Session do
          nil <- os_env && System.get_env(os_env) do
       default.()
     else
-      {:ok, value} -> value
-      value when is_binary(value) -> from_os_env(key, value)
+      {:ok, value} ->
+        value
+
+      value when is_binary(value) ->
+        if key == :args, do: String.split(value, " ", trim: true), else: value
     end
   end
-
-  defp from_os_env(:args, value), do: String.split(value, " ", trim: true)
-  defp from_os_env(_key, value), do: value
 
   # A path is taken against the child's cwd, a bare name searched on the PATH the
   # child will see; a missing cwd finds nothing.
@@ -281,51 +261,39 @@ defmodule Pty.Session do
   # a `false` value unsets a variable the parent had — the only way to keep an
   # inherited var out of the child.
   #
-  # Merged by key here rather than concatenated, because erlexec resolves a
-  # duplicate key by cancelling the pair: `[{"TERM", "xterm-256color"}, {"TERM",
+  # Merged by name here rather than concatenated — Map.new keeps the last entry
+  # per name, so the caller wins over the TERM default — because erlexec resolves
+  # a duplicate key by cancelling the pair: `[{"TERM", "xterm-256color"}, {"TERM",
   # false}]` drops our entry and leaves the INHERITED TERM standing, so a caller
-  # asking to unset a var @default_env also sets would silently get the parent's
-  # value. Merging first means erlexec sees one entry per name.
+  # asking to unset a var the TERM default also sets would silently get the
+  # parent's value. Merging first means erlexec sees one entry per name.
   defp env(opts) do
-    overrides = opts |> resolve(:env, nil, fn -> [] end) |> normalize_env()
-
-    @default_env |> Map.new() |> Map.merge(overrides) |> Enum.sort()
-  end
-
-  defp normalize_env(env) do
-    Map.new(env, fn
+    [{"TERM", "xterm-256color"} | Enum.to_list(resolve(opts, :env, nil, fn -> [] end))]
+    |> Map.new(fn
       {key, false} -> {to_string(key), false}
       {key, value} -> {to_string(key), to_string(value)}
     end)
+    |> Enum.sort()
   end
 
   @impl true
   def handle_call(:info, _from, state) do
-    info = %{
-      id: state.id,
-      command: state.command,
-      started: state.started,
-      subscribers: map_size(state.subs),
-      buffer_bytes: state.buffer_bytes,
-      cols: state.cols,
-      rows: state.rows
-    }
-
-    {:reply, info, state}
+    info = Map.take(state, [:id, :command, :started, :buffer_bytes, :cols, :rows])
+    {:reply, Map.put(info, :subscribers, map_size(state.subs)), state}
   end
 
   def handle_call({:attach, sub}, _from, state) do
     ref = Process.monitor(sub)
-    {:reply, {:ok, replay(state)}, put_in(state.subs[sub], ref)}
-  end
 
-  defp replay(%{buffer: q}), do: q |> :queue.to_list() |> IO.iodata_to_binary()
+    {:reply, {:ok, state.buffer |> :queue.to_list() |> IO.iodata_to_binary()},
+     put_in(state.subs[sub], ref)}
+  end
 
   @impl true
   def handle_cast({:detach, sub}, state) do
-    {ref, subs} = Map.pop(state.subs, sub)
+    {ref, state} = pop_in(state.subs[sub])
     ref && Process.demonitor(ref, [:flush])
-    {:noreply, %{state | subs: subs}}
+    {:noreply, state}
   end
 
   def handle_cast({:input, data}, state) do
@@ -337,7 +305,6 @@ defmodule Pty.Session do
   def handle_cast({:resize, cols, rows}, %{cols: cols, rows: rows} = state), do: {:noreply, state}
 
   def handle_cast({:resize, cols, rows}, state) do
-    # winsz takes rows first, cols second — the reverse of our API.
     :exec.winsz(state.os_pid, rows, cols)
     {:noreply, %{state | cols: cols, rows: rows}}
   end
@@ -352,26 +319,30 @@ defmodule Pty.Session do
   def handle_info({:EXIT, exec_pid, reason}, %{exec_pid: exec_pid} = state),
     do: {:stop, :normal, %{state | exit: exit_code(reason)}}
 
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    {:noreply, %{state | subs: Map.delete(state.subs, pid)}}
-  end
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state),
+    do: {:noreply, update_in(state.subs, &Map.delete(&1, pid))}
 
   # A stray message (an EXIT from some other linked process) is no reason to die.
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Decode erlexec's exit reason to an integer exit code for {:pty_exit, code}.
   defp exit_code(:normal), do: 0
 
   defp exit_code({:exit_status, raw}) do
     case :exec.status(raw) do
       {:status, code} -> code
-      {:signal, _sig, _core} -> @signal_exit_base + band(raw, @signal_status_mask)
+      # Signal death: 128 + signal number (shell convention). The low 7 bits of
+      # erlexec's raw wait(2) status carry the signal number (WTERMSIG).
+      {:signal, _sig, _core} -> 128 + band(raw, 0x7F)
     end
   end
 
   # port_closed: erlexec itself went down, taking the child with it.
   defp exit_code(_other), do: 1
 
+  # Replayed to reconstruct the terminal on (re)attach. Bounded deque of raw
+  # output chunks (replay is chunk-aligned, ≤ cap; a chunk over the cap alone
+  # is cut to its tail).
+  #
   # A chunk alone over the cap keeps a copy of its tail (a bare slice would pin
   # the whole chunk), so a replay is never emptied; an empty one is not queued.
   defp append(state, <<>>), do: state
@@ -384,7 +355,7 @@ defmodule Pty.Session do
     %{state | buffer: q, buffer_bytes: n}
   end
 
-  defp broadcast(subs, msg), do: Enum.each(Map.keys(subs), &send(&1, msg))
+  defp broadcast(subs, msg), do: :maps.foreach(fn sub, _ref -> send(sub, msg) end, subs)
 
   defp trim(q, n, cap) when n > cap do
     {{:value, head}, q} = :queue.out(q)
@@ -395,8 +366,9 @@ defmodule Pty.Session do
 
   # Every end — exit, reap, crash — passes here, so every subscriber hears it
   # once. A live child is hung up and awaited; the link guarantees its EXIT
-  # (port_closed at worst). A reap reports @hangup_code whatever erlexec says:
-  # it overrides the status of any child it stopped with 0.
+  # (port_closed at worst). A reap reports 129 — 128 + SIGHUP, as a shell
+  # reports a hung-up child — whatever erlexec says: it overrides the status of
+  # any child it stopped with 0.
   @impl true
   def terminate(_reason, state) do
     code =
@@ -404,25 +376,25 @@ defmodule Pty.Session do
         (
           :exec.kill(state.os_pid, :sighup)
           Process.send_after(self(), :hangup_grace, @hangup_grace_ms)
-          hang_up(state)
+          await_exit(state)
         )
 
     broadcast(state.subs, {:pty_exit, code})
   end
 
   # Relays what the child prints on its way out; past the grace, stops it.
-  defp hang_up(%{exec_pid: exec_pid, os_pid: os_pid} = state) do
+  defp await_exit(%{exec_pid: exec_pid, os_pid: os_pid} = state) do
     receive do
       {:stdout, ^os_pid, data} ->
         broadcast(state.subs, {:pty_data, data})
-        hang_up(state)
+        await_exit(state)
 
       :hangup_grace ->
         :exec.stop(exec_pid)
-        hang_up(state)
+        await_exit(state)
 
       {:EXIT, ^exec_pid, _reason} ->
-        @hangup_code
+        129
     end
   end
 end
