@@ -1,0 +1,13 @@
+amends "package://github.com/jdx/hk/releases/download/v2.5.0/hk@2.5.0#/Config.pkl"
+// Pre-push gate: what ci.yaml runs, one round-trip sooner. The `unset` guard:
+// git exports GIT_DIR etc. into hook children, which would point any
+// test-spawned git at this repo.
+hooks {
+  ["pre-push"] {
+    steps {
+      ["gate"] {
+        check = "unset $(git rev-parse --local-env-vars); mise x -- mix format --check-formatted && mise x -- mix compile --warnings-as-errors && mise x -- mix test --cover"
+      }
+    }
+  }
+}
