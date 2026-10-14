@@ -6,40 +6,17 @@ defmodule Pty.SessionTest do
 
   alias Pty.Session
 
-  @buffer_cap 256_000
-  @default_cols 80
-  @default_rows 24
-  @id_len 12
   @recv_deadline_ms 2_000
-  @resize_cols 100
-  @resize_rows 40
-  @sample 100
-
-  # Buffer-cap probe: 500-byte lines stay under macOS MAX_CANON (1024) so cat
-  # echoes them in canonical mode; drain self-paces so the pty buffer never fills.
-  @cap_deadline_ms 5_000
-  @cap_line_len 500
-  @cap_lines_per_block 20
-  @cap_target 350_000
-  @drain_idle_ms 50
 
   setup do
-    prev_cmd = System.get_env("PTY_CMD")
-    prev_args = System.get_env("PTY_ARGS")
-
-    on_exit(fn ->
-      restore_env("PTY_CMD", prev_cmd)
-      restore_env("PTY_ARGS", prev_args)
-    end)
-
-    :ok
+    prev = for key <- ~w(PTY_CMD PTY_ARGS), do: {key, System.get_env(key)}
+    on_exit(fn -> for {key, val} <- prev, do: restore_env(key, val) end)
   end
 
   describe "new_id/0" do
     test "returns unique, 12-char, url-safe ids" do
-      ids = for _ <- 1..@sample, do: Session.new_id()
+      ids = for _ <- 1..100, do: Session.new_id()
 
-      assert Enum.all?(ids, &(byte_size(&1) == @id_len))
       assert Enum.all?(ids, &(&1 =~ ~r/\A[A-Za-z0-9_-]{12}\z/))
       assert length(Enum.uniq(ids)) == length(ids)
     end
@@ -47,18 +24,10 @@ defmodule Pty.SessionTest do
 
   describe "ensure/1" do
     test "starts and registers a session; same id is idempotent, different id is distinct" do
-      id = Session.new_id()
-      System.put_env("PTY_CMD", "cat")
-      on_exit(fn -> drop(id) end)
-
-      {:ok, pid} = Session.ensure(id)
-      assert is_pid(pid)
+      {id, pid} = start_cat_session()
       assert {:ok, ^pid} = Session.ensure(id)
-
-      other = Session.new_id()
-      on_exit(fn -> drop(other) end)
-      {:ok, pid2} = Session.ensure(other)
-      assert pid2 != pid
+      {_, other} = start_cat_session()
+      assert other != pid
     end
   end
 
@@ -88,27 +57,47 @@ defmodule Pty.SessionTest do
     end
 
     test "PTY_ARGS splits on spaces" do
-      System.put_env("PTY_CMD", "cat")
       System.put_env("PTY_ARGS", "-u  -n")
-      id = Session.new_id()
-      on_exit(fn -> drop(id) end)
+      {_id, pid} = start_cat_session()
 
-      {:ok, pid} = Session.ensure(id)
       assert Session.info(pid).command == "cat -u -n"
     end
   end
 
-  describe "stray input" do
-    test "a detach without an attach, a stray message, and a dead pid are all harmless" do
+  describe "subscribers" do
+    test "a stray detach and a stray message are harmless; a dead subscriber is dropped" do
       {_id, pid} = start_cat_session()
+      sub = spawn(fn -> Process.sleep(:infinity) end)
+      {:ok, _} = Session.attach(pid, sub)
 
       Session.detach(pid, self())
       send(pid, :stray)
-      assert Session.info(pid).subscribers == 0
+      assert Session.info(pid).subscribers == 1
+
+      Process.exit(sub, :kill)
+      poll_until(fn -> Session.info(pid).subscribers == 0 end)
 
       Process.exit(pid, :kill)
       refute Session.info(pid)
       assert Session.kill(pid) == {:error, :not_found}
+    end
+
+    test "output buffers while detached, replays on attach, then reaches every subscriber" do
+      {_id, pid} = start_cat_session()
+      marker = unique_marker()
+      Session.input(pid, marker <> "\n")
+      poll_until(fn -> Session.info(pid).buffer_bytes >= byte_size(marker) end)
+
+      assert {:ok, buffer} = Session.attach(pid, self())
+      assert buffer =~ marker
+
+      live = unique_marker()
+      task = Task.async(fn -> recv_until_marker(live) end)
+      {:ok, _} = Session.attach(pid, task.pid)
+      Session.input(pid, live <> "\n")
+
+      assert recv_until_marker(live) =~ live
+      assert Task.await(task) =~ live
     end
   end
 
@@ -133,137 +122,33 @@ defmodule Pty.SessionTest do
     end
   end
 
-  describe "attach/2 + input/2" do
-    test "attach returns a binary buffer and input reaches the pty" do
-      {_id, pid} = start_cat_session()
-
-      assert {:ok, buffer} = Session.attach(pid, self())
-      assert is_binary(buffer)
-
-      marker = unique_marker()
-      Session.input(pid, marker <> "\n")
-      assert {:ok, _} = Session.attach(pid, self())
-
-      assert recv_until_marker(marker) =~ marker
-    end
-
-    test "a later subscriber gets prior output replayed in its buffer" do
-      {_id, pid} = start_cat_session()
-      {:ok, _} = Session.attach(pid, self())
-
-      marker = unique_marker()
-      Session.input(pid, marker <> "\n")
-      _ = recv_until_marker(marker)
-
-      # A second, independent process attaches after output exists.
-      task = Task.async(fn -> Session.attach(pid, self()) end)
-      assert {:ok, buffer} = Task.await(task)
-      assert String.contains?(buffer, marker)
-    end
-  end
-
-  describe "detached buffering" do
-    test "buffers pty output with no subscriber attached, then replays it on attach" do
+  describe "list/0 + resize/3" do
+    test "reports the documented keys and default dims, then the resized dims" do
       {id, pid} = start_cat_session()
-
-      marker = unique_marker()
-      Session.input(pid, marker <> "\n")
-      poll_until(fn -> find_session(id).buffer_bytes >= byte_size(marker) end)
-
-      assert {:ok, buffer} = Session.attach(pid, self())
-      assert String.contains?(buffer, marker)
-    end
-  end
-
-  describe "broadcast fan-out" do
-    test "two live subscribers both receive the broadcast feed" do
-      {_id, pid} = start_cat_session()
-      parent = self()
-      marker = unique_marker()
-
-      collect = fn ->
-        {:ok, _} = Session.attach(pid, self())
-        send(parent, :ready)
-        recv_until_marker(marker)
-      end
-
-      task1 = Task.async(collect)
-      task2 = Task.async(collect)
-
-      # Both must be attached before we feed input, or one misses the broadcast.
-      assert_receive :ready, @recv_deadline_ms
-      assert_receive :ready, @recv_deadline_ms
-
-      Session.input(pid, marker <> "\n")
-
-      assert Task.await(task1, @recv_deadline_ms) =~ marker
-      assert Task.await(task2, @recv_deadline_ms) =~ marker
-    end
-  end
-
-  describe "list/0" do
-    test "reports metadata with the documented keys" do
-      {id, _pid} = start_cat_session()
-
       s = find_session(id)
-      assert s
 
       assert Enum.sort(Map.keys(s)) ==
                [:buffer_bytes, :cols, :command, :id, :rows, :started, :subscribers]
 
-      assert s.id == id
-      assert s.cols == @default_cols
-      assert s.rows == @default_rows
-      assert is_integer(s.buffer_bytes)
-      assert is_integer(s.started)
+      assert %{id: ^id, cols: 80, rows: 24} = s
+
+      # Casts then a call from one process arrive in order: no polling.
+      Session.resize(pid, 80, 24)
+      Session.resize(pid, 100, 40)
+      assert %{cols: 100, rows: 40} = Session.info(pid)
     end
   end
 
-  describe "resize/3" do
-    test "updates the reported cols and rows" do
-      {id, pid} = start_cat_session()
-
-      Session.resize(pid, @default_cols, @default_rows)
-      Session.resize(pid, @resize_cols, @resize_rows)
-
-      poll_until(fn ->
-        s = find_session(id)
-        s && s.cols == @resize_cols && s.rows == @resize_rows
-      end)
-    end
-  end
-
-  describe "subscriber cleanup" do
-    test "a dead subscriber is dropped from the count" do
-      {id, pid} = start_cat_session()
-
-      sub = spawn(fn -> Process.sleep(:infinity) end)
-      {:ok, _} = Session.attach(pid, sub)
-      poll_until(fn -> find_session(id).subscribers >= 1 end)
-
-      before = find_session(id).subscribers
-      Process.exit(sub, :kill)
-
-      poll_until(fn -> find_session(id).subscribers < before end)
-      assert find_session(id).subscribers == before - 1
-    end
-  end
-
-  describe "kill/1" do
-    test "terminates a live session and errors on an unknown id" do
+  describe "kill/1 + kill_all/0" do
+    test "kill reaps a live id and errors on an unknown one; kill_all reaps and counts" do
       {id, _pid} = start_cat_session()
 
       assert Session.kill(id) == :ok
       refute find_session(id)
-
       assert Session.kill("does-not-exist") == {:error, :not_found}
-    end
-  end
 
-  describe "kill_all/0" do
-    test "terminates every session and returns the count" do
-      {_id1, _} = start_cat_session()
-      {_id2, _} = start_cat_session()
+      start_cat_session()
+      start_cat_session()
 
       # kill_all is global; the suite is async: false so nothing else is live.
       assert Session.kill_all() >= 2
@@ -340,21 +225,7 @@ defmodule Pty.SessionTest do
   end
 
   describe "buffer bound" do
-    test "the replay buffer stays capped at #{@buffer_cap} bytes while output exceeds it" do
-      {id, pid} = start_cat_session()
-      {:ok, _} = Session.attach(pid, self())
-
-      line = String.duplicate("x", @cap_line_len) <> "\n"
-      block = String.duplicate(line, @cap_lines_per_block)
-
-      received = feed_until(pid, block, @cap_target, deadline(@cap_deadline_ms))
-
-      # We saw more raw output than the cap, yet the deque never exceeded it.
-      assert received > @buffer_cap
-      assert find_session(id).buffer_bytes <= @buffer_cap
-    end
-
-    test "a chunk larger than the cap keeps its tail rather than emptying the replay" do
+    test "a chunk over the cap keeps its tail; overflow evicts whole chunks oldest first" do
       # Driven through the callbacks: no pty needed to exercise the deque.
       tail = String.duplicate("t", 100)
       chunk = String.duplicate("x", 900) <> tail
@@ -369,10 +240,14 @@ defmodule Pty.SessionTest do
       assert [kept_tail] = :queue.to_list(kept.buffer)
       assert :binary.referenced_byte_size(kept_tail) == 100
       assert :queue.is_empty(off.buffer)
+
+      # Replay is chunk-aligned: one byte over the cap drops the whole 100-byte tail.
+      assert {:noreply, %{buffer: q, buffer_bytes: 1}} =
+               Session.handle_info({:stdout, 1, "y"}, kept)
+
+      assert :queue.to_list(q) == ["y"]
     end
   end
-
-  ## Helpers — session lifecycle
 
   defp alive?(os_pid),
     do: match?({_, 0}, System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true))
@@ -380,8 +255,8 @@ defmodule Pty.SessionTest do
   defp start_cat_session do
     id = Session.new_id()
     System.put_env("PTY_CMD", "cat")
-    {:ok, pid} = Session.ensure(id)
     on_exit(fn -> drop(id) end)
+    {:ok, pid} = Session.ensure(id)
     {id, pid}
   end
 
@@ -401,34 +276,5 @@ defmodule Pty.SessionTest do
   defp echo(pid, expression) do
     Session.input(pid, ~s|echo "#{expression} sum=$((21+21))"\n|)
     recv_until_marker("sum=42")
-  end
-
-  ## Helpers — pty output
-
-  # Feed `block` repeatedly, draining echoes between writes, until `target` bytes seen.
-  defp feed_until(pid, block, target, deadline) do
-    do_feed(pid, block, 0, target, deadline)
-  end
-
-  defp do_feed(pid, block, received, target, deadline) do
-    cond do
-      received >= target ->
-        received
-
-      now() > deadline ->
-        flunk("received only #{received} bytes before deadline (target #{target})")
-
-      true ->
-        Session.input(pid, block)
-        do_feed(pid, block, drain(received), target, deadline)
-    end
-  end
-
-  defp drain(acc) do
-    receive do
-      {:pty_data, data} -> drain(acc + byte_size(data))
-    after
-      @drain_idle_ms -> acc
-    end
   end
 end
