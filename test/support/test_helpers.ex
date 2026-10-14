@@ -10,7 +10,6 @@ defmodule Pty.TestHelpers do
 
   @poll_interval_ms 25
   @poll_tries 80
-  @recv_deadline_ms 2_000
 
   # Test cleanup: kill a session outright — the link stops its child at once.
   # A reap would wait out the hangup grace for a child that missed its SIGHUP
@@ -35,12 +34,12 @@ defmodule Pty.TestHelpers do
   end
 
   # PTY output collected until it contains `marker`; each chunk must arrive
-  # within @recv_deadline_ms.
+  # within ExUnit's :assert_receive_timeout.
   def recv_until_marker(marker, acc \\ "") do
     if acc =~ marker do
       acc
     else
-      assert_receive {:pty_data, data}, @recv_deadline_ms
+      assert_receive {:pty_data, data}
       recv_until_marker(marker, acc <> data)
     end
   end

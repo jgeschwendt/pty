@@ -47,10 +47,9 @@ defmodule Pty.Session do
 
   Two caveats, both verified against erlexec 2.3 and both surprising:
 
-    * **`TERM` cannot be unset.** `false` removes any other inherited variable,
-      but erlexec always hands its child a `TERM` — so `%{"TERM" => false}`
-      yields the inherited value, not an unset one. Override it instead. Every
-      other name honours `false`.
+    * **`false` cannot unset `TERM`.** erlexec gives a PTY child `TERM=dumb`
+      when none is set, so `%{"TERM" => false}` yields `dumb`. Override it
+      instead.
     * **The inherited environment is snapshotted at boot.** The child inherits
       from erlexec's `exec-port` daemon, forked when `:pty` starts, so a
       `System.put_env/2` afterwards never reaches a session. Pass anything set
@@ -59,7 +58,6 @@ defmodule Pty.Session do
 
   # :temporary — a dead session must not be resurrected as an empty shell.
   use GenServer, restart: :temporary
-  import Bitwise, only: [band: 2]
   require Logger
 
   @registry Pty.SessionRegistry
@@ -172,11 +170,6 @@ defmodule Pty.Session do
     env = env(opts)
     command_line = Enum.join([cmd | args], " ")
 
-    # erlexec launches its child asynchronously: run/2 returns {:ok, ...} even for
-    # a missing binary or cwd and reports the failure later as an exit. A live
-    # {:ok, pid} for either would violate ensure/2's contract, so both are checked
-    # up front — the executable as the child would find it, against its own cwd
-    # and PATH.
     exec_opts = [
       :stdin,
       :stdout,
@@ -193,10 +186,15 @@ defmodule Pty.Session do
       :pty_echo,
       # erlexec's winsz is {rows, cols} — the reverse of our cols/rows API.
       {:winsz, {rows, cols}},
-      {:env, env},
+      {:env, Map.to_list(env)},
       {:cd, cwd}
     ]
 
+    # erlexec launches its child asynchronously: run/2 returns {:ok, ...} even for
+    # a missing binary or cwd and reports the failure later as an exit. A live
+    # {:ok, pid} for either would violate ensure/2's contract, so both are checked
+    # up front — the executable as the child would find it, against its own cwd
+    # and PATH.
     with {:ok, executable} <- executable(cmd, cwd, env),
          argv = [executable | Enum.map(args, &String.to_charlist/1)],
          {:ok, exec_pid, os_pid} <- :exec.run(argv, exec_opts) do
@@ -241,11 +239,7 @@ defmodule Pty.Session do
   # A path is taken against the child's cwd, a bare name searched on the PATH the
   # child will see; a missing cwd finds nothing.
   defp executable(cmd, cwd, env) do
-    path =
-      case List.keyfind(env, "PATH", 0) do
-        {_, path} when is_binary(path) -> path
-        _ -> System.get_env("PATH", "")
-      end
+    path = env["PATH"] || System.get_env("PATH", "")
 
     # PATH entries are taken against the child's cwd too ("" is the cwd itself).
     path = path |> String.split(":") |> Enum.map_join(":", &Path.expand(&1, cwd))
@@ -257,23 +251,15 @@ defmodule Pty.Session do
     end
   end
 
-  # erlexec's :env extends the inherited environment rather than replacing it, and
-  # a `false` value unsets a variable the parent had — the only way to keep an
-  # inherited var out of the child.
-  #
-  # Merged by name here rather than concatenated — Map.new keeps the last entry
-  # per name, so the caller wins over the TERM default — because erlexec resolves
-  # a duplicate key by cancelling the pair: `[{"TERM", "xterm-256color"}, {"TERM",
-  # false}]` drops our entry and leaves the INHERITED TERM standing, so a caller
-  # asking to unset a var the TERM default also sets would silently get the
-  # parent's value. Merging first means erlexec sees one entry per name.
+  # erlexec's :env extends the inherited environment; `false` unsets a parent
+  # variable. Map.new keeps one entry per name, the caller's over the TERM
+  # default, normalised to strings, so executable/3 reads the PATH the child gets.
   defp env(opts) do
     [{"TERM", "xterm-256color"} | Enum.to_list(resolve(opts, :env, nil, fn -> [] end))]
     |> Map.new(fn
       {key, false} -> {to_string(key), false}
       {key, value} -> {to_string(key), to_string(value)}
     end)
-    |> Enum.sort()
   end
 
   @impl true
@@ -332,37 +318,33 @@ defmodule Pty.Session do
       {:status, code} -> code
       # Signal death: 128 + signal number (shell convention). The low 7 bits of
       # erlexec's raw wait(2) status carry the signal number (WTERMSIG).
-      {:signal, _sig, _core} -> 128 + band(raw, 0x7F)
+      {:signal, _sig, _core} -> 128 + Bitwise.band(raw, 0x7F)
     end
   end
 
   # port_closed: erlexec itself went down, taking the child with it.
   defp exit_code(_other), do: 1
 
-  # Replayed to reconstruct the terminal on (re)attach. Bounded deque of raw
-  # output chunks (replay is chunk-aligned, ≤ cap; a chunk over the cap alone
-  # is cut to its tail).
-  #
-  # A chunk alone over the cap keeps a copy of its tail (a bare slice would pin
-  # the whole chunk), so a replay is never emptied; an empty one is not queued.
+  # Replayed to reconstruct the terminal on (re)attach: a bounded deque of raw
+  # output chunks, evicted whole, so replay is chunk-aligned and ≤ cap. A chunk
+  # alone over the cap keeps a copy of its tail (a bare slice would pin the whole
+  # chunk), so a replay is never emptied; an empty one is not queued.
   defp append(state, <<>>), do: state
 
   defp append(%{cap: cap} = state, data) when byte_size(data) > cap,
     do: append(state, :binary.copy(binary_part(data, byte_size(data), -cap)))
 
-  defp append(%{buffer: q, buffer_bytes: n, cap: cap} = state, data) do
-    {q, n} = trim(:queue.in(data, q), n + byte_size(data), cap)
-    %{state | buffer: q, buffer_bytes: n}
+  defp append(%{buffer: q, buffer_bytes: n} = state, data),
+    do: trim(%{state | buffer: :queue.in(data, q), buffer_bytes: n + byte_size(data)})
+
+  defp trim(%{buffer: q, buffer_bytes: n, cap: cap} = state) when n > cap do
+    {{:value, head}, q} = :queue.out(q)
+    trim(%{state | buffer: q, buffer_bytes: n - byte_size(head)})
   end
+
+  defp trim(state), do: state
 
   defp broadcast(subs, msg), do: :maps.foreach(fn sub, _ref -> send(sub, msg) end, subs)
-
-  defp trim(q, n, cap) when n > cap do
-    {{:value, head}, q} = :queue.out(q)
-    trim(q, n - byte_size(head), cap)
-  end
-
-  defp trim(q, n, _cap), do: {q, n}
 
   # Every end — exit, reap, crash — passes here, so every subscriber hears it
   # once. A live child is hung up and awaited; the link guarantees its EXIT
