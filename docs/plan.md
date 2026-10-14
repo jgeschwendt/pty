@@ -29,8 +29,9 @@ session out of process; the host owns endpoint, auth and page.
 - A bad client frame is `:ignore`, never a crashed session.
 - The first server frame is the scrollback, even empty: the attach signal.
   `pty.js` resets backoff only then, and every reconnect is `?reattach` —
-  attach-only. Close `1000` = session ended, `4404` = reattach found none;
-  `pty.js` stops on both, anything else reconnects.
+  attach-only. Close `4000` = session ended, `4404` = reattach found none,
+  `4422` = spawn refused; `pty.js` stops on those three, anything else —
+  Bandit's own shutdown `1000` included — reconnects.
 - A cross-origin browser upgrade is refused unless `:check_origin` admits it.
 
 ## Hazards
@@ -54,6 +55,3 @@ session out of process; the host owns endpoint, auth and page.
 1. No pre-push hook yet.
 2. `pty.js` has no behavioural test — `asset_test` only greps it.
 3. `list/0` drops a session busy past the 1 s info timeout.
-4. Close `1000` is also what Bandit sends on its own shutdown, which `pty.js`
-   takes as final; `1011` is retried forever even for a permanent spawn
-   failure (bad `:command`). Both want distinct private codes — a wire change.

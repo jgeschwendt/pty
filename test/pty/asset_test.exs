@@ -16,6 +16,7 @@ defmodule Pty.AssetTest do
     assert js =~ ~s|t: "i"|
     assert js =~ ~s|t: "r"|
     assert js =~ "arraybuffer"
+    assert js =~ "[4000, 4404, 4422]"
   end
 
   test "it imports nothing — the host owns xterm.js and the framework", %{js: js} do

@@ -90,8 +90,11 @@ first (even empty — it is the "attached" signal):
 - `{"t":"i","d":"<keys>"}` — keyboard input → PTY stdin
 - `{"t":"r","cols":C,"rows":R}` — resize
 
-The server closes `1000` when the session ends, `4404` when a reconnect
-(`?reattach`) finds no session, and `1011` when one cannot be started.
+The server closes `4000` when the session ends, `4404` when a reconnect
+(`?reattach`) finds no session, `4422` when the spawn is refused (`:command` or
+`:cwd` not found — permanent), and `1011` when a session cannot be started or
+attached for any other reason (transient). `1000` is never the session's: Bandit
+sends it on its own shutdown, so a client treats it as transport loss.
 
 Malformed frames (bad JSON, unknown type, out-of-range or non-integer
 dimensions) are ignored at the boundary rather than crashing the session.
@@ -118,8 +121,8 @@ term.dispose();  // unmount: detaches the client, the PTY keeps running
 with exponential backoff on transport loss — reset only once a socket is
 attached, so a refused upgrade backs off instead of hammering — and every
 reconnect is attach-only: a session that ended while the client was away
-closes `4404` rather than respawning under the old id. Both `1000` and `4404`
-stop it and fire `onExit`.
+closes `4404` rather than respawning under the old id. `4000`, `4404` and
+`4422` stop it and fire `onExit`; every other close, `1000` included, reconnects.
 `Pty.connect(term, url, opts)` wires a Terminal you built yourself.
 
 ## Integrating

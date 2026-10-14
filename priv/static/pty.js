@@ -11,7 +11,7 @@
 // Server → client frames are binary PTY output, written straight through; the
 // first is the scrollback, and marks the socket attached. Every reconnect asks
 // with ?reattach, so a session that ended while away closes 4404 instead of
-// being silently respawned under the old id.
+// being silently respawned under the old id; a refused spawn closes 4422.
 // Client → server frames are JSON: {t:"i",d} for input, {t:"r",cols,rows} for
 // resize. OSC 0/2 (title) surfaces as the onTitle callback rather than a
 // document.title write — an embedded rail must not rename its host page. OSC 52
@@ -22,8 +22,11 @@
 })(typeof self !== "undefined" ? self : this, function () {
   var RECONNECT_BASE_MS = 1000;
   var RECONNECT_MAX_MS = 15000;
-  var WS_CLOSE_NORMAL = 1000;
-  var WS_CLOSE_NOT_FOUND = 4404;
+  // Closes after which there is nothing to come back to: 4000 the session
+  // ended, 4404 it ended while we were away, 4422 it could never start. Every
+  // other code — 1000 included, which Bandit sends on its own shutdown — is
+  // transport loss.
+  var FINAL_CLOSE_CODES = [4000, 4404, 4422];
 
   var DEFAULT_TERMINAL_OPTIONS = {
     allowProposedApi: true, // required by the unicode11 addon
@@ -98,9 +101,7 @@
         if (opts.onClose) opts.onClose(event);
         if (closed) return;
 
-        // 1000: the session ended. 4404: it ended while we were away. Either
-        // way there is nothing to come back to. Anything else is transport loss.
-        if (event.code === WS_CLOSE_NORMAL || event.code === WS_CLOSE_NOT_FOUND) {
+        if (FINAL_CLOSE_CODES.indexOf(event.code) !== -1) {
           if (opts.onExit) opts.onExit(event);
           return;
         }

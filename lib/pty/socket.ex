@@ -25,9 +25,13 @@ defmodule Pty.Socket do
     * client → server: JSON text frames, decoded by `Pty.Client`.
     * server → client: binary frames of raw PTY output, fed straight to xterm.js;
       the first is the scrollback.
-    * close `1000`: the session ended (its child exited or it was reaped).
+    * close `4000`: the session ended (its child exited or it was reaped).
+      Private, not `1000`: Bandit closes `1000` on its own shutdown, which a
+      client must take as transport loss, not as the end.
     * close `4404`: no session to attach — a reattach found none, or the one
       found ended as it attached.
+    * close `4422`: the spawn was refused — `:command` or `:cwd` not found, or
+      erlexec rejected the spec. Permanent: retrying cannot help.
     * close `1011`: the session could not be started or attached; transient.
 
   The browser half lives in `priv/static/pty.js`.
@@ -38,9 +42,10 @@ defmodule Pty.Socket do
   alias Pty.Client
   alias Pty.Session
 
+  @ws_close_ended 4000
   @ws_close_internal_error 1011
-  @ws_close_normal 1000
   @ws_close_not_found 4404
+  @ws_close_refused 4422
 
   @impl true
   def init(%{session_id: id} = arg) do
@@ -53,6 +58,9 @@ defmodule Pty.Socket do
       # Never there, or ending as we attached: either way, gone.
       not_found when not_found in [:error, {:error, :not_found}] ->
         close(@ws_close_not_found, "session not found")
+
+      {:error, {:spawn_failed, reason}} ->
+        close(@ws_close_refused, "spawn refused (#{inspect(reason)})")
 
       _ ->
         close(@ws_close_internal_error, "session unavailable")
@@ -78,11 +86,11 @@ defmodule Pty.Socket do
   end
 
   def handle_info({:pty_exit, code}, state) do
-    {:stop, :normal, {@ws_close_normal, "process exited (#{code})"}, state}
+    {:stop, :normal, {@ws_close_ended, "process exited (#{code})"}, state}
   end
 
   def handle_info({:DOWN, _ref, :process, session, _reason}, %{session: session} = state) do
-    {:stop, :normal, {@ws_close_normal, "session ended"}, state}
+    {:stop, :normal, {@ws_close_ended, "session ended"}, state}
   end
 
   def handle_info(_msg, state), do: {:ok, state}
