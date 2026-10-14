@@ -1,6 +1,6 @@
 defmodule Pty.TestHelpers do
   @moduledoc """
-  Helpers shared across Pty test modules: session cleanup and lookup, env
+  Helpers shared across Pty test modules: session cleanup, lookup and readiness, env
   restore, unique markers, bounded polling, and pty-output collection.
   """
 
@@ -31,6 +31,15 @@ defmodule Pty.TestHelpers do
         Process.sleep(@poll_interval_ms)
         poll_until(fun, tries - 1)
       )
+  end
+
+  # A `cat` session proven exec'd by its own copy of a line: a child reaped before
+  # exec swallows the SIGHUP in erlexec's inherited handler and waits out the grace.
+  def ready({_id, pid} = session) do
+    {:ok, _} = Session.attach(pid, self())
+    Session.input(pid, "up\n")
+    recv_until_marker(~r/up.*up/s)
+    session
   end
 
   # PTY output collected until it contains `marker`; each chunk must arrive

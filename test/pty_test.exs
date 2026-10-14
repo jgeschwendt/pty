@@ -108,14 +108,16 @@ defmodule PtyTest do
 
   describe "reap/1 + reap_all/0 + list/0" do
     test "reaping removes sessions from the listing" do
-      id = start_session()
+      # Each child must have exec'd: one reaped before exec waits out the hangup grace.
+      [{id, _} | _] =
+        for _ <- 1..3 do
+          id = start_session()
+          ready({id, elem(Pty.lookup(id), 1)})
+        end
 
       assert Enum.any?(Pty.list(), &(&1.id == id))
       assert Pty.reap(id) == :ok
       refute Enum.any?(Pty.list(), &(&1.id == id))
-
-      start_session()
-      start_session()
       assert Pty.reap_all() >= 2
       assert Pty.list() == []
     end

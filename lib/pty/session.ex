@@ -45,15 +45,10 @@ defmodule Pty.Session do
 
       Pty.start(id, command: "claude", env: %{"CLAUDE_CONFIG_DIR" => dir, "ANTHROPIC_MODEL" => false})
 
-  Two caveats, both verified against erlexec 2.3 and both surprising:
-
-    * **`false` cannot unset `TERM`.** erlexec gives a PTY child `TERM=dumb`
-      when none is set, so `%{"TERM" => false}` yields `dumb`. Override it
-      instead.
-    * **The inherited environment is snapshotted at boot.** The child inherits
-      from erlexec's `exec-port` daemon, forked when `:pty` starts, so a
-      `System.put_env/2` afterwards never reaches a session. Pass anything set
-      at runtime through `:env` explicitly.
+  One caveat, verified against erlexec 2.3: **the inherited environment is
+  snapshotted at boot.** The child inherits from erlexec's `exec-port` daemon,
+  forked when `:pty` starts, so a `System.put_env/2` afterwards never reaches a
+  session. Pass anything set at runtime through `:env` explicitly.
   """
 
   # :temporary — a dead session must not be resurrected as an empty shell.
@@ -193,8 +188,7 @@ defmodule Pty.Session do
     # erlexec launches its child asynchronously: run/2 returns {:ok, ...} even for
     # a missing binary or cwd and reports the failure later as an exit. A live
     # {:ok, pid} for either would violate ensure/2's contract, so both are checked
-    # up front — the executable as the child would find it, against its own cwd
-    # and PATH.
+    # up front (see executable/3).
     with {:ok, executable} <- executable(cmd, cwd, env),
          argv = [executable | Enum.map(args, &String.to_charlist/1)],
          {:ok, exec_pid, os_pid} <- :exec.run(argv, exec_opts) do
@@ -236,8 +230,8 @@ defmodule Pty.Session do
     end
   end
 
-  # A path is taken against the child's cwd, a bare name searched on the PATH the
-  # child will see; a missing cwd finds nothing.
+  # A path is taken against the child's cwd, a bare name searched on the `:env`
+  # PATH if given, else the node's own; a missing cwd finds nothing.
   defp executable(cmd, cwd, env) do
     path = env["PATH"] || System.get_env("PATH", "")
 
@@ -252,8 +246,8 @@ defmodule Pty.Session do
   end
 
   # erlexec's :env extends the inherited environment; `false` unsets a parent
-  # variable. Map.new keeps one entry per name, the caller's over the TERM
-  # default, normalised to strings, so executable/3 reads the PATH the child gets.
+  # variable. Map.new keeps one entry per name, last wins — the caller's over the
+  # TERM default — normalised to strings for executable/3's PATH lookup.
   defp env(opts) do
     [{"TERM", "xterm-256color"} | Enum.to_list(resolve(opts, :env, nil, fn -> [] end))]
     |> Map.new(fn

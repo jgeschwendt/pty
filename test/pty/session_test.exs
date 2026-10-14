@@ -104,24 +104,20 @@ defmodule Pty.SessionTest do
       assert echo(start_sh_session([]), ~s|term=${TERM-none}|) =~ "term=xterm-256color"
     end
 
-    # erlexec's pty gives the child TERM=dumb when TERM is false. The `false` → unset
-    # path is deliberately untested: it only bites on a variable the child INHERITED,
-    # and the inherited set is erlexec's boot snapshot (see the Session moduledoc),
-    # which a test running after :pty started cannot add to.
-    test "a false TERM yields dumb" do
-      assert echo(start_sh_session(env: %{"TERM" => false}), ~s|term=${TERM-none}|) =~
-               "term=dumb"
+    # printenv, not ${TERM}: sh sets an unexported TERM=dumb when none is set.
+    test "a false value unsets TERM" do
+      assert echo(start_sh_session(env: %{"TERM" => false}), "term=$(printenv TERM || echo none)") =~
+               "term=none"
     end
   end
 
   test "list/0 + resize/3 report the documented keys and default dims, then the resized dims" do
     {id, pid} = start_session()
-    s = find_session(id)
+    assert %{id: ^id, cols: 80, rows: 24} = s = find_session(id)
+    assert is_integer(s.started)
 
     assert Enum.sort(Map.keys(s)) ==
              [:buffer_bytes, :cols, :command, :id, :rows, :started, :subscribers]
-
-    assert %{id: ^id, cols: 80, rows: 24} = s
 
     # Casts then a call from one process arrive in order: no polling.
     Session.resize(pid, 80, 24)
@@ -130,14 +126,14 @@ defmodule Pty.SessionTest do
   end
 
   test "kill/1 reaps a live id and errors on an unknown one; kill_all/0 reaps and counts" do
-    {id, _pid} = start_session()
+    {id, _pid} = ready(start_session())
 
     assert Session.kill(id) == :ok
     refute find_session(id)
     assert Session.kill("does-not-exist") == {:error, :not_found}
 
-    start_session()
-    start_session()
+    ready(start_session())
+    ready(start_session())
 
     # kill_all is global; the suite is async: false so nothing else is live.
     assert Session.kill_all() >= 2
@@ -185,8 +181,7 @@ defmodule Pty.SessionTest do
     end
 
     test "a crashed session still tells subscribers and takes its child along" do
-      {_id, pid} = start_session()
-      {:ok, _} = Session.attach(pid, self())
+      {_id, pid} = ready(start_session())
       os_pid = :sys.get_state(pid).os_pid
 
       ExUnit.CaptureLog.capture_log(fn -> catch_exit(GenServer.call(pid, :bogus)) end)
@@ -196,7 +191,7 @@ defmodule Pty.SessionTest do
     end
 
     test "a session killed outright still takes its child along" do
-      {_id, pid} = start_session()
+      {_id, pid} = ready(start_session())
       os_pid = :sys.get_state(pid).os_pid
 
       Process.exit(pid, :kill)
