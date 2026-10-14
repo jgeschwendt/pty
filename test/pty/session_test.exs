@@ -6,29 +6,23 @@ defmodule Pty.SessionTest do
 
   alias Pty.Session
 
-  @recv_deadline_ms 2_000
-
   setup do
     prev = for key <- ~w(PTY_CMD PTY_ARGS), do: {key, System.get_env(key)}
     on_exit(fn -> for {key, val} <- prev, do: restore_env(key, val) end)
   end
 
-  describe "new_id/0" do
-    test "returns unique, 12-char, url-safe ids" do
-      ids = for _ <- 1..100, do: Session.new_id()
+  test "new_id/0 returns unique, 12-char, url-safe ids" do
+    ids = for _ <- 1..100, do: Session.new_id()
 
-      assert Enum.all?(ids, &(&1 =~ ~r/\A[A-Za-z0-9_-]{12}\z/))
-      assert length(Enum.uniq(ids)) == length(ids)
-    end
+    assert Enum.all?(ids, &(&1 =~ ~r/\A[A-Za-z0-9_-]{12}\z/))
+    assert length(Enum.uniq(ids)) == length(ids)
   end
 
-  describe "ensure/1" do
-    test "starts and registers a session; same id is idempotent, different id is distinct" do
-      {id, pid} = start_cat_session()
-      assert {:ok, ^pid} = Session.ensure(id)
-      {_, other} = start_cat_session()
-      assert other != pid
-    end
+  test "ensure/1 starts and registers a session; same id is idempotent, different id is distinct" do
+    {id, pid} = start_session()
+    assert {:ok, ^pid} = Session.ensure(id)
+    {_, other} = start_session()
+    assert other != pid
   end
 
   describe "executable resolution" do
@@ -42,10 +36,7 @@ defmodule Pty.SessionTest do
             [command: "./probe", cwd: dir],
             [command: "probe", env: %{"PATH" => dir <> ":/bin"}]
           ] do
-        id = Session.new_id()
-        on_exit(fn -> drop(id) end)
-        assert {:ok, pid} = Session.ensure(id, opts)
-        {:ok, _} = Session.attach(pid, self())
+        start_sh_session(opts)
         assert recv_until_marker("resolved") =~ "resolved"
       end
 
@@ -58,7 +49,7 @@ defmodule Pty.SessionTest do
 
     test "PTY_ARGS splits on spaces" do
       System.put_env("PTY_ARGS", "-u  -n")
-      {_id, pid} = start_cat_session()
+      {_id, pid} = start_session()
 
       assert Session.info(pid).command == "cat -u -n"
     end
@@ -66,7 +57,7 @@ defmodule Pty.SessionTest do
 
   describe "subscribers" do
     test "a stray detach and a stray message are harmless; a dead subscriber is dropped" do
-      {_id, pid} = start_cat_session()
+      {_id, pid} = start_session()
       sub = spawn(fn -> Process.sleep(:infinity) end)
       {:ok, _} = Session.attach(pid, sub)
 
@@ -83,7 +74,7 @@ defmodule Pty.SessionTest do
     end
 
     test "output buffers while detached, replays on attach, then reaches every subscriber" do
-      {_id, pid} = start_cat_session()
+      {_id, pid} = start_session()
       marker = unique_marker()
       Session.input(pid, marker <> "\n")
       poll_until(fn -> Session.info(pid).buffer_bytes >= byte_size(marker) end)
@@ -113,47 +104,44 @@ defmodule Pty.SessionTest do
       assert echo(start_sh_session([]), ~s|term=${TERM-none}|) =~ "term=xterm-256color"
     end
 
-    # The `false` → unset path is deliberately untested: it only bites on a variable
-    # the child INHERITED, and the inherited set is erlexec's boot snapshot (see the
-    # Session moduledoc), which a test running after :pty started cannot add to.
-    test "a false value leaves TERM inherited rather than unset" do
-      refute echo(start_sh_session(env: %{"TERM" => false}), ~s|term=${TERM-none}|) =~
-               "term=xterm-256color"
+    # erlexec's pty gives the child TERM=dumb when TERM is false. The `false` → unset
+    # path is deliberately untested: it only bites on a variable the child INHERITED,
+    # and the inherited set is erlexec's boot snapshot (see the Session moduledoc),
+    # which a test running after :pty started cannot add to.
+    test "a false TERM yields dumb" do
+      assert echo(start_sh_session(env: %{"TERM" => false}), ~s|term=${TERM-none}|) =~
+               "term=dumb"
     end
   end
 
-  describe "list/0 + resize/3" do
-    test "reports the documented keys and default dims, then the resized dims" do
-      {id, pid} = start_cat_session()
-      s = find_session(id)
+  test "list/0 + resize/3 report the documented keys and default dims, then the resized dims" do
+    {id, pid} = start_session()
+    s = find_session(id)
 
-      assert Enum.sort(Map.keys(s)) ==
-               [:buffer_bytes, :cols, :command, :id, :rows, :started, :subscribers]
+    assert Enum.sort(Map.keys(s)) ==
+             [:buffer_bytes, :cols, :command, :id, :rows, :started, :subscribers]
 
-      assert %{id: ^id, cols: 80, rows: 24} = s
+    assert %{id: ^id, cols: 80, rows: 24} = s
 
-      # Casts then a call from one process arrive in order: no polling.
-      Session.resize(pid, 80, 24)
-      Session.resize(pid, 100, 40)
-      assert %{cols: 100, rows: 40} = Session.info(pid)
-    end
+    # Casts then a call from one process arrive in order: no polling.
+    Session.resize(pid, 80, 24)
+    Session.resize(pid, 100, 40)
+    assert %{cols: 100, rows: 40} = Session.info(pid)
   end
 
-  describe "kill/1 + kill_all/0" do
-    test "kill reaps a live id and errors on an unknown one; kill_all reaps and counts" do
-      {id, _pid} = start_cat_session()
+  test "kill/1 reaps a live id and errors on an unknown one; kill_all/0 reaps and counts" do
+    {id, _pid} = start_session()
 
-      assert Session.kill(id) == :ok
-      refute find_session(id)
-      assert Session.kill("does-not-exist") == {:error, :not_found}
+    assert Session.kill(id) == :ok
+    refute find_session(id)
+    assert Session.kill("does-not-exist") == {:error, :not_found}
 
-      start_cat_session()
-      start_cat_session()
+    start_session()
+    start_session()
 
-      # kill_all is global; the suite is async: false so nothing else is live.
-      assert Session.kill_all() >= 2
-      assert Session.list() == []
-    end
+    # kill_all is global; the suite is async: false so nothing else is live.
+    assert Session.kill_all() >= 2
+    assert Session.list() == []
   end
 
   describe "lifecycle" do
@@ -164,8 +152,8 @@ defmodule Pty.SessionTest do
 
         Session.input(pid, line <> "\n")
 
-        assert_receive {:pty_exit, ^code}, @recv_deadline_ms
-        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, @recv_deadline_ms
+        assert_receive {:pty_exit, ^code}
+        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
       end
     end
 
@@ -197,18 +185,18 @@ defmodule Pty.SessionTest do
     end
 
     test "a crashed session still tells subscribers and takes its child along" do
-      {_id, pid} = start_cat_session()
+      {_id, pid} = start_session()
       {:ok, _} = Session.attach(pid, self())
       os_pid = :sys.get_state(pid).os_pid
 
       ExUnit.CaptureLog.capture_log(fn -> catch_exit(GenServer.call(pid, :bogus)) end)
 
-      assert_receive {:pty_exit, 129}, @recv_deadline_ms
+      assert_receive {:pty_exit, 129}
       refute alive?(os_pid)
     end
 
     test "a session killed outright still takes its child along" do
-      {_id, pid} = start_cat_session()
+      {_id, pid} = start_session()
       os_pid = :sys.get_state(pid).os_pid
 
       Process.exit(pid, :kill)
@@ -224,48 +212,42 @@ defmodule Pty.SessionTest do
     end
   end
 
-  describe "buffer bound" do
-    test "a chunk over the cap keeps its tail; overflow evicts whole chunks oldest first" do
-      # Driven through the callbacks: no pty needed to exercise the deque.
-      tail = String.duplicate("t", 100)
-      chunk = String.duplicate("x", 900) <> tail
-      state = %{os_pid: 1, subs: %{}, buffer: :queue.new(), buffer_bytes: 0, cap: 100}
-      {:noreply, kept} = Session.handle_info({:stdout, 1, chunk}, state)
-      {:noreply, off} = Session.handle_info({:stdout, 1, chunk}, %{state | cap: 0})
+  test "buffer bound: a chunk over the cap keeps its tail; overflow evicts whole chunks oldest first" do
+    # Driven through the callbacks: no pty needed to exercise the deque.
+    tail = String.duplicate("t", 100)
+    chunk = String.duplicate("x", 900) <> tail
+    state = %{os_pid: 1, subs: %{}, buffer: :queue.new(), buffer_bytes: 0, cap: 100}
+    {:noreply, kept} = Session.handle_info({:stdout, 1, chunk}, state)
+    {:noreply, off} = Session.handle_info({:stdout, 1, chunk}, %{state | cap: 0})
 
-      assert {:reply, {:ok, ^tail}, %{buffer_bytes: 100}} =
-               Session.handle_call({:attach, self()}, nil, kept)
+    assert {:reply, {:ok, ^tail}, %{buffer_bytes: 100}} =
+             Session.handle_call({:attach, self()}, nil, kept)
 
-      # The tail is a copy, not a slice pinning the chunk; cap 0 queues nothing.
-      assert [kept_tail] = :queue.to_list(kept.buffer)
-      assert :binary.referenced_byte_size(kept_tail) == 100
-      assert :queue.is_empty(off.buffer)
+    # The tail is a copy, not a slice pinning the chunk; cap 0 queues nothing.
+    assert [kept_tail] = :queue.to_list(kept.buffer)
+    assert :binary.referenced_byte_size(kept_tail) == 100
+    assert :queue.is_empty(off.buffer)
 
-      # Replay is chunk-aligned: one byte over the cap drops the whole 100-byte tail.
-      assert {:noreply, %{buffer: q, buffer_bytes: 1}} =
-               Session.handle_info({:stdout, 1, "y"}, kept)
+    # Replay is chunk-aligned: one byte over the cap drops the whole 100-byte tail.
+    assert {:noreply, %{buffer: q, buffer_bytes: 1}} =
+             Session.handle_info({:stdout, 1, "y"}, kept)
 
-      assert :queue.to_list(q) == ["y"]
-    end
+    assert :queue.to_list(q) == ["y"]
   end
 
   defp alive?(os_pid),
     do: match?({_, 0}, System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true))
 
-  defp start_cat_session do
+  defp start_session(cmd \\ "cat", opts \\ []) do
     id = Session.new_id()
-    System.put_env("PTY_CMD", "cat")
+    System.put_env("PTY_CMD", cmd)
     on_exit(fn -> drop(id) end)
-    {:ok, pid} = Session.ensure(id)
+    {:ok, pid} = Session.ensure(id, opts)
     {id, pid}
   end
 
   defp start_sh_session(opts) do
-    id = Session.new_id()
-    System.put_env("PTY_CMD", "sh")
-    on_exit(fn -> drop(id) end)
-
-    {:ok, pid} = Session.ensure(id, opts)
+    {_id, pid} = start_session("sh", opts)
     {:ok, _buffer} = Session.attach(pid, self())
     pid
   end
