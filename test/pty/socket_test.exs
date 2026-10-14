@@ -13,8 +13,9 @@ defmodule Pty.SocketTest do
   @oversize_dim 2_000
   @resize_cols 90
   @resize_rows 30
+  @ws_close_ended 4000
   @ws_close_internal_error 1011
-  @ws_close_normal 1000
+  @ws_close_refused 4422
 
   setup do
     prev_cmd = System.get_env("PTY_CMD")
@@ -55,16 +56,25 @@ defmodule Pty.SocketTest do
       assert String.contains?(buffer, marker)
     end
 
-    test "a session that cannot be started yields a clean 1011 close" do
-      id = fresh_id()
-      bogus = "/nonexistent/definitely-not-a-binary-#{System.unique_integer([:positive])}"
-      System.put_env("PTY_CMD", bogus)
+    test "a refused spawn closes 4422 — permanent, the client stops" do
+      System.put_env("PTY_CMD", "/nonexistent/definitely-not-a-binary")
 
       {result, _log} =
-        ExUnit.CaptureLog.with_log(fn -> Socket.init(%{session_id: id}) end)
+        ExUnit.CaptureLog.with_log(fn -> Socket.init(%{session_id: fresh_id()}) end)
 
-      assert {:stop, :normal, {@ws_close_internal_error, reason}, %{session: nil}} = result
-      assert is_binary(reason)
+      assert {:stop, :normal, {@ws_close_refused, "spawn refused (:enoent)"}, %{session: nil}} =
+               result
+    end
+
+    test "any other start failure closes 1011 — transient, the client retries" do
+      # An argument that is no string crashes init/1 past the spawn check.
+      {result, _log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          Socket.init(%{session_id: fresh_id(), session_opts: [args: [1]]})
+        end)
+
+      assert {:stop, :normal, {@ws_close_internal_error, "session unavailable"}, %{session: nil}} =
+               result
     end
 
     test ":session_opts configure the session this connection starts" do
@@ -144,7 +154,7 @@ defmodule Pty.SocketTest do
     test "pty exit stops with a normal websocket close" do
       state = %{session: self()}
 
-      assert {:stop, :normal, {@ws_close_normal, reason}, ^state} =
+      assert {:stop, :normal, {@ws_close_ended, reason}, ^state} =
                Socket.handle_info({:pty_exit, 0}, state)
 
       assert is_binary(reason)
@@ -156,7 +166,7 @@ defmodule Pty.SocketTest do
 
       assert_receive {:DOWN, _, :process, _, _} = down, 1_000
 
-      assert {:stop, :normal, {@ws_close_normal, "session ended"}, ^state} =
+      assert {:stop, :normal, {@ws_close_ended, "session ended"}, ^state} =
                Socket.handle_info(down, state)
     end
 
