@@ -262,11 +262,14 @@ log or the registry, but an id is a name, not a credential.
 ## Development
 
 ```sh
-mise install          # elixir + erlang, pinned in mise.toml
+mise install          # bun + elixir + erlang, pinned in mise.toml
 mix deps.get
 mix test
+bun test --coverage   # pty.js
 ```
 
 Sessions in the suite spawn `cat` and `sh` over real PTYs — no mocks, no server.
+`pty.js` runs unmodified against hand-written fakes of the WebSocket, the
+timers and xterm.js, so the JS suite needs no `bun install`.
 
 [erlexec]: https://hex.pm/packages/erlexec
