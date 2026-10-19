@@ -153,6 +153,16 @@ test("transport loss backs off 1 s → 15 s; an attach resets it and reattaches"
   expect(closes).toHaveLength(7);
 });
 
+test("1013 (lagged) after attach reattaches to resync from the scrollback, never onExit", () => {
+  const exits = [];
+  Pty.connect(new Terminal(), "/pty?s=a", { onExit: (e) => exits.push(e.code) });
+  frame(last());
+  last().onclose({ code: 1013 });
+  timers.at(-1).fn();
+  expect(last().url).toBe("wss://example.test/pty?s=a&reattach=1");
+  expect(exits).toEqual([]);
+});
+
 test("close() disposes every listener connect added to the terminal", () => {
   const term = new Terminal();
   Pty.connect(term, "/pty", { onTitle: () => {} }).close();

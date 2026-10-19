@@ -27,7 +27,8 @@
   // Closes after which there is nothing to come back to: 4000 the session
   // ended, 4404 it ended while we were away, 4422 it could never start. Every
   // other code — 1000 included, which Bandit sends on its own shutdown — is
-  // transport loss.
+  // transport loss, and 1013 (lagged: dropped for falling behind) reattaches
+  // to resync from the scrollback.
   var FINAL_CLOSE_CODES = [4000, 4404, 4422];
   // CAN, then RIS (ESC c). Written in-band rather than term.reset(), which
   // leaves xterm's parser mid-sequence — a frame the old socket cut inside an

@@ -56,6 +56,7 @@ id = Pty.new_id()                        # url-safe, 12 chars
 Pty.write(session, "ls\n")
 Pty.resize(session, 120, 40)
 # receive {:pty_data, bytes} … and once, {:pty_exit, code} (none if killed outright)
+# or {:pty_lagged}: over :max_lag messages behind, dropped — attach again to resync
 Pty.detach(session)                      # PTY keeps running
 Pty.reap(id)                             # hang the child up, end the session
 ```
@@ -77,7 +78,7 @@ Pty.reap(id)                             # hang the child up, end the session
 Every function that takes a session takes its **id** or its **pid**; an id
 naming no live session is `{:error, :not_found}`, except from `info/1`, which
 returns `nil`. Spawn options (`:command`, `:args`, `:cwd`, `:env`, `:cols`,
-`:rows`, `:scrollback`) resolve as **option › application env › OS env
+`:rows`, `:scrollback`, `:max_lag`) resolve as **option › application env › OS env
 (`PTY_CMD`, `PTY_ARGS`, `PTY_CWD`) › default**, and apply only when `start/2`
 actually starts something. `:env` (a map or list of pairs) layers over the
 environment erlexec snapshotted at boot — a later `System.put_env/2` never
@@ -102,7 +103,9 @@ The server closes `4000` when the session ends, `4404` when a reconnect
 not) or the spawn is refused (`:command` or `:cwd` not found, or erlexec rejecting an option such as a
 bad `:cols` — permanent), and `1011` for any other start failure, retried because pty cannot
 tell a passing failure (resources) from a fault (an option that crashes init);
-the host's logs show which. `1000` is never the session's: Bandit
+the host's logs show which. `1013` means this client fell over `:max_lag`
+(1 000) messages behind and was dropped; retried, it reattaches and resyncs
+from the scrollback. `1000` is never the session's: Bandit
 sends it on its own shutdown, so a client treats it as transport loss.
 
 Malformed frames (bad JSON, unknown type, a `"b"` code point above 255,
@@ -135,7 +138,7 @@ attached, so a refused upgrade backs off instead of hammering — and once
 attached, every reconnect is attach-only (`?reattach`): a session that ended
 while the client was away closes `4404` rather than respawning under the old
 id. A retry before the first attach may still spawn. `4000`, `4404` and
-`4422` stop it and fire `onExit`; every other close, `1000` included, reconnects.
+`4422` stop it and fire `onExit`; every other close, `1000` and `1013` included, reconnects.
 `Pty.connect(term, url, opts)` wires a Terminal you built yourself — load
 its `ClipboardAddon` first, so the read guard `connect` adds is tried ahead of
 it; its `close()` unwires it, listeners and guard included, so the Terminal can
@@ -261,6 +264,10 @@ log or the registry, but an id is a name, not a credential.
   Replay redraws a full-screen TUI correctly in practice but is not a VT
   snapshot; for exactness, parse terminal state server-side and redraw from
   that.
+- **Output is bounded per subscriber**: one more than `:max_lag` (1 000)
+  messages behind gets a single `{:pty_lagged}` and is dropped — the tmux
+  resync model — so a stalled reader costs the VM about that many chunks.
+  Input is not bounded: erlexec's exec-port queues stdin without limit.
 - **Reaping hangs up**: SIGHUP, the signal a real terminal sends when its
   window closes (interactive shells ignore SIGTERM). A child still alive 2 s
   later gets SIGTERM, then SIGKILL 1 s after, both to its process group.

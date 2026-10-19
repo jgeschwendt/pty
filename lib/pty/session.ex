@@ -39,6 +39,10 @@ defmodule Pty.Session do
   | `:cols`      | `:cols`                  | —          | `80`                 |
   | `:rows`      | `:rows`                  | —          | `24`                 |
   | `:scrollback`| `:scrollback`            | —          | `256_000` bytes      |
+  | `:max_lag`   | `:max_lag`               | —          | `1_000` messages     |
+
+  A subscriber more than `:max_lag` messages behind is dropped and sent one
+  `{:pty_lagged}` in place of the feed; it reattaches to resync from the scrollback.
 
   ## Environment
 
@@ -234,6 +238,7 @@ defmodule Pty.Session do
            buffer_bytes: 0,
            cap: spec.cap,
            exit: nil,
+           max_lag: spec.max_lag,
            cols: spec.cols,
            rows: spec.rows
          }}
@@ -262,6 +267,7 @@ defmodule Pty.Session do
          cwd: cwd,
          env: env,
          executable: executable,
+         max_lag: resolve(opts, :max_lag, nil, fn -> 1_000 end),
          rows: resolve(opts, :rows, nil, fn -> 24 end)
        }}
     end
@@ -343,8 +349,8 @@ defmodule Pty.Session do
 
   @impl true
   def handle_info({:stdout, os_pid, data}, %{os_pid: os_pid} = state) do
-    broadcast(state.subs, {:pty_data, data})
-    {:noreply, append(state, data)}
+    subs = Map.filter(state.subs, &feed(&1, data, state.max_lag))
+    {:noreply, append(%{state | subs: subs}, data)}
   end
 
   # The child exited: the link delivers its status. terminate/2 tells subscribers.
@@ -389,6 +395,22 @@ defmodule Pty.Session do
   end
 
   defp trim(state), do: state
+
+  # A subscriber past max_lag queued messages gets one {:pty_lagged} in place of
+  # the chunk and is dropped: unread, its mailbox would grow the VM by the
+  # child's whole output. It reattaches to resync from the scrollback, as tmux
+  # does. Process.info/2 raises on a remote pid, so only a local one is measured;
+  # a dead one is nil, sent to as before, and dropped by its DOWN.
+  defp feed({sub, ref}, data, max_lag) do
+    if node(sub) == node() and
+         match?({_, n} when n > max_lag, Process.info(sub, :message_queue_len)) do
+      Process.demonitor(ref, [:flush])
+      send(sub, {:pty_lagged})
+      false
+    else
+      send(sub, {:pty_data, data})
+    end
+  end
 
   defp broadcast(subs, msg), do: :maps.foreach(fn sub, _ref -> send(sub, msg) end, subs)
 
