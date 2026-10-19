@@ -268,8 +268,10 @@ log or the registry, but an id is a name, not a credential.
   `{:pty_exit, 129}`; `reap/1` returns once the child is gone, but the id is
   free from the start — a `start/2` meanwhile gets a fresh session, and a second
   `reap/1` by id waits the dying one out (or reaps that fresh one). erlexec links
-  each child to its session, so even a session killed outright takes its child
-  along — no orphaned PTYs. A reap in a child's first instant, before it has
+  each child to its session, so even a session killed outright takes its child's
+  process group along. Jobs an interactive shell put in groups of their own
+  (`cmd &`) survive that outright kill; a reap's hangup reaches them through the
+  shell. A reap in a child's first instant, before it has
   exec'd, can miss the hangup and take the escalation path.
 
 ## Development
