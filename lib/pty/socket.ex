@@ -37,12 +37,13 @@ defmodule Pty.Socket do
       found ended as it attached.
     * close `4422`: refused — an id `Pty.valid_id?/1` rejects, reattaching or
       not, or a spawn whose `:command` or `:cwd` is not found or whose option
-      erlexec rejected (e.g. a bad `:cols`). Permanent.
+      is rejected (e.g. a bad `:cols`, or a `:max_lag` that is no positive
+      integer). Permanent.
     * close `1011`: any other start failure. Retried: pty cannot tell a passing
       failure (resources) from a fault (an option that crashes init); the
       host's logs show which.
     * close `1013`: this subscriber fell over `:max_lag` messages behind and
-      was dropped (see `Pty.Session`). Retried: the client reattaches and gets
+      was taken off the feed (see `Pty.Session`). Retried: the client reattaches and gets
       the scrollback.
 
   The browser half lives in `priv/static/pty.js`.

@@ -56,7 +56,7 @@ id = Pty.new_id()                        # url-safe, 12 chars
 Pty.write(session, "ls\n")
 Pty.resize(session, 120, 40)
 # receive {:pty_data, bytes} … and once, {:pty_exit, code} (none if killed outright)
-# or {:pty_lagged}: over :max_lag messages behind, dropped — attach again to resync
+# or {:pty_lagged}: over :max_lag behind, off the feed — attach again to resync
 Pty.detach(session)                      # PTY keeps running
 Pty.reap(id)                             # hang the child up, end the session
 ```
@@ -100,11 +100,12 @@ first (even empty — it is the "attached" signal):
 
 The server closes `4000` when the session ends, `4404` when a reconnect
 (`?reattach`) finds no session, `4422` when the id is invalid (reattaching or
-not) or the spawn is refused (`:command` or `:cwd` not found, or erlexec rejecting an option such as a
-bad `:cols` — permanent), and `1011` for any other start failure, retried because pty cannot
+not) or the spawn is refused (`:command` or `:cwd` not found, or an option
+rejected, such as a bad `:cols` or a `:max_lag` that is no positive integer —
+permanent), and `1011` for any other start failure, retried because pty cannot
 tell a passing failure (resources) from a fault (an option that crashes init);
 the host's logs show which. `1013` means this client fell over `:max_lag`
-(1 000) messages behind and was dropped; retried, it reattaches and resyncs
+(1 000) messages behind and was taken off the feed; retried, it reattaches and resyncs
 from the scrollback. `1000` is never the session's: Bandit
 sends it on its own shutdown, so a client treats it as transport loss.
 
@@ -264,14 +265,19 @@ log or the registry, but an id is a name, not a credential.
   Replay redraws a full-screen TUI correctly in practice but is not a VT
   snapshot; for exactness, parse terminal state server-side and redraw from
   that.
-- **Output is bounded per subscriber**: one more than `:max_lag` (1 000)
-  messages behind gets a single `{:pty_lagged}` and is dropped — the tmux
-  resync model — so a stalled reader costs the VM about that many chunks.
-  Input is not bounded: erlexec's exec-port queues stdin without limit.
+- **Output is bounded per local subscriber**: one more than `:max_lag`
+  (1 000, a positive integer) messages behind gets a single `{:pty_lagged}`
+  and is taken off the feed — the tmux resync model — so a stalled reader
+  costs the VM about that many chunks, a reap's hangup relay included. It
+  still hears the `{:pty_exit, code}`, and still counts as a subscriber until
+  it reattaches or dies. A subscriber on another node is not measured
+  (`Process.info/2` is local-only). Input is not bounded: erlexec's exec-port
+  queues stdin without limit.
 - **Reaping hangs up**: SIGHUP, the signal a real terminal sends when its
   window closes (interactive shells ignore SIGTERM). A child still alive 2 s
   later gets SIGTERM, then SIGKILL 1 s after, both to its process group.
-  Whatever it prints on the way out still reaches subscribers, then
+  Whatever it prints on the way out still reaches subscribers (bounded by
+  `:max_lag` as the live feed is), then
   `{:pty_exit, 129}`; `reap/1` returns once the child is gone, but the id is
   free from the start — a `start/2` meanwhile gets a fresh session, and a second
   `reap/1` by id waits the dying one out (or reaps that fresh one). erlexec links

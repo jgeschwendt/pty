@@ -91,8 +91,10 @@
     <li><strong>every end reaches subscribers as one <code class="code">{:pty_exit, code}</code></strong>
       — <code class="code">129</code> for a reap or crash — except an untrappable kill, which skips
       <code class="code">terminate/2</code>; <code class="code">Pty.Socket</code> monitors the session
-      for that. A subscriber dropped for lag (over <code class="code">:max_lag</code> messages behind)
-      gets one <code class="code">{:pty_lagged}</code> instead, and hears no end unless it reattaches. A reap SIGHUPs, relays the child's last output, and after 2 s lets erlexec stop it
+      for that. A local subscriber over <code class="code">:max_lag</code> messages behind gets one
+      <code class="code">{:pty_lagged}</code> in place of further output, the live feed and a reap's
+      relay alike, and is taken off the feed — yet still monitored, counted, and sent the one
+      <code class="code">{:pty_exit, code}</code>. A reap SIGHUPs, relays the child's last output, and after 2 s lets erlexec stop it
       (SIGTERM, then SIGKILL 1 s on, to the process group). A session's death, however abrupt, takes
       its child through the erlexec link.</li>
     <li><strong>reaps never go through the supervisor</strong> — <code class="code">GenServer.stop</code>,
@@ -137,9 +139,9 @@
       <tbody>
         <tr data-code="4000"><td class="table-mono">4000</td><td>the session ended — its child exited or it was reaped</td><td>stop · <code class="code">onExit</code></td></tr>
         <tr data-code="4404"><td class="table-mono">4404</td><td>a reattach found no session, or the one found ended as it attached</td><td>stop · <code class="code">onExit</code></td></tr>
-        <tr data-code="4422"><td class="table-mono">4422</td><td>an invalid id, reattaching or not, or a refused spawn — <code class="code">:command</code> or <code class="code">:cwd</code> not found, or erlexec rejected an option such as a bad <code class="code">:cols</code>; permanent</td><td>stop · <code class="code">onExit</code></td></tr>
+        <tr data-code="4422"><td class="table-mono">4422</td><td>an invalid id, reattaching or not, or a refused spawn — <code class="code">:command</code> or <code class="code">:cwd</code> not found, or an option rejected, such as a bad <code class="code">:cols</code> or a <code class="code">:max_lag</code> that is no positive integer; permanent</td><td>stop · <code class="code">onExit</code></td></tr>
         <tr data-code="1011"><td class="table-mono">1011</td><td>any other start failure — pty cannot tell a passing failure (resources) from a fault (an option that crashes init); the host's logs show which</td><td>reconnect</td></tr>
-        <tr data-code="1013"><td class="table-mono">1013</td><td>a subscriber fell more than <code class="code">:max_lag</code> messages behind and was dropped</td><td>reconnect · reattach, resync from scrollback</td></tr>
+        <tr data-code="1013"><td class="table-mono">1013</td><td>a subscriber fell more than <code class="code">:max_lag</code> messages behind and was taken off the feed</td><td>reconnect · reattach, resync from scrollback</td></tr>
         <tr data-code="1000"><td class="table-mono">1000</td><td>never the session's: Bandit sends it on its own shutdown</td><td>reconnect</td></tr>
         <tr data-code="other"><td class="table-mono">other</td><td>transport loss, or an upgrade <code class="code">Pty.Plug</code> refused (<code class="code">400</code> bad id, <code class="code">403</code> origin) — backed off, since the backoff resets only on attach</td><td>reconnect, 1 s → 15 s</td></tr>
       </tbody>
@@ -175,10 +177,12 @@
     <li><strong><code class="code">Origin</code> is compared with <code class="code">Host</code></strong>,
       so DNS rebinding is outside the check.</li>
     <li><strong>Input is unbounded</strong> — exec-port queues browser input without limit. Output is
-      bounded per subscriber: one more than <code class="code">:max_lag</code> (1 000) messages behind
-      is dropped with a single <code class="code">{:pty_lagged}</code> (the tmux resync model), where
-      unbounded it grew the host VM by the child's whole output (64 MB in 2.5 s with zero reads). Only
-      the live feed checks; the exit path is bounded by the 3 s hangup ladder.</li>
+      bounded per local subscriber: one more than <code class="code">:max_lag</code> (1 000) messages
+      behind gets a single <code class="code">{:pty_lagged}</code> and is taken off the feed (the tmux
+      resync model), where unbounded it grew the host VM by the child's whole output (64 MB in 2.5 s
+      with zero reads). The hangup's relay is bounded the same way, and a lagged subscriber still
+      hears the <code class="code">{:pty_exit, code}</code>. A subscriber on another node is not
+      measured: <code class="code">Process.info/2</code> is local-only.</li>
     <li><strong>An outright kill reaches only the child's process group</strong> — a job an
       interactive shell put in its own group (<code class="code">sleep 100000 &amp;</code>) outlives a
       <code class="code">:kill</code> or a brutal supervisor kill; a reap's hangup reaches it through the shell.</li>
@@ -194,6 +198,9 @@
     <li><code class="code">bun test --coverage</code> reports 100 % of <code class="code">pty.js</code> but enforces nothing, and bun measures lines and functions, not branches — <code class="code">mount()</code>'s degrade paths are held by their test, not the metric: add <code class="code">bunfig.toml</code> with <code class="code">[test] coverageThreshold = { functions = 1.0, lines = 1.0 }</code> — the shift sandbox refuses writing bun config.</li>
     <li><code class="code">list/0</code> drops a session busy past the 1 s info timeout.</li>
     <li>Sweep leftovers, confirmed and unfixed (s-20261019T0620Z): a restarted Registry leaves live sessions unregistered; scrollback replay can start mid-UTF-8 or mid-escape; the resize skip compares against the last requested size, not the PTY's; a lone UTF-16 surrogate drops a whole input frame; subscriber messages carry no session id; the scrollback cap ignores per-chunk overhead of tiny chunks.</li>
+    <li>Redraw the close-codes and session-lifecycle boards of the <code class="code">pty figures</code> canvas for <code class="code">1013</code> and <code class="code">{:pty_lagged}</code> (<code class="code">mise run figures</code>) — the PNGs and their alt text predate backpressure.</li>
+    <li>A lagged <code class="code">Pty.Socket</code> drains up to <code class="code">:max_lag</code> queued chunks before it closes <code class="code">1013</code>, and a client slower than the child's output resyncs (RESET + ≤ 256 KB replay) about once a second while the burst lasts, since the first frame resets the backoff; a flush of queued <code class="code">{:pty_data}</code> on lag and a backoff that survives a <code class="code">1013</code> are the candidates.</li>
+    <li>A child that floods without end through SIGHUP and ignores SIGTERM is never SIGKILLed (probe: <code class="code">trap '' TERM; trap 'while :; do echo x; done' HUP</code>, ~480 k chunks/s, alive 10 s on, before and after backpressure) — exec-port's kill timer starves behind the output, so the reap never returns; confirm in erlexec and bound it (a session-side SIGKILL past the ladder).</li>
   </ol>
   <p class="docs-foot">pty · <a class="link" href="https://github.com/jgeschwendt/pty">jgeschwendt/pty</a> · the README is the API reference.</p>
 </section>

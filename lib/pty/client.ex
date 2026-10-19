@@ -9,11 +9,15 @@ defmodule Pty.Client do
     1. **Attach.** Call `Pty.attach/2` with the process that will receive the
        feed. The reply is the session's scrollback — write it to the terminal
        before anything else so the view is reconstructed.
-    2. **Handle two messages.** The session sends `{:pty_data, binary}` for
+    2. **Handle three messages.** The session sends `{:pty_data, binary}` for
        every chunk of PTY output and `{:pty_exit, code}` once, when the session
        ends — its child exited (`code` is the exit status), or it was reaped or
        crashed (`129`). Only a session killed outright cannot say so: monitor
-       its pid to cover that too. Everything else is the client's own business.
+       its pid to cover that too. A client more than `:max_lag` messages
+       behind gets one `{:pty_lagged}` instead of further data and is taken
+       off the feed; it calls `Pty.attach/2` again to resume from the
+       scrollback, and still gets the `{:pty_exit, code}` meanwhile.
+       Everything else is the client's own business.
     3. **Detach.** Dying is enough — the session monitors subscribers and drops
        them. Call `Pty.detach/2` when the client process outlives the view.
 
