@@ -34,7 +34,7 @@ class Terminal {
     this.settings = settings;
     for (const name of ["onBinary", "onData", "onResize", "onTitleChange"])
       this[name] = (fn) => ((this.on[name] = fn), { dispose: () => delete this.on[name] });
-    for (const name of ["dispose", "loadAddon", "open", "reset", "write"])
+    for (const name of ["dispose", "loadAddon", "open", "write"])
       this[name] = (arg) => this.log.push(arg === undefined ? name : [name, arg]);
     this.loadAddon = (addon) => (this.log.push(["loadAddon", addon]), addon.activate?.(this));
   }
@@ -96,14 +96,16 @@ test("socketUrl: http(s) maps to ws(s), relative to the page; ws(s) passes throu
   expect(sockets[0].binaryType).toBe("arraybuffer");
 });
 
-test("the first frame attaches: reset, dims, onOpen, then writes through", () => {
+// The reset is in-band: CAN aborts whatever sequence a cut frame left open,
+// then RIS (ESC c). term.reset() would leave xterm's parser mid-sequence.
+test("the first frame attaches: an in-band reset, dims, onOpen, then writes through", () => {
   const term = new Terminal();
   let opened = 0;
   const handle = Pty.connect(term, "/pty", { onOpen: () => opened++ });
   expect(handle.socket).toBe(last());
   frame(last(), 104, 105);
   frame(last(), 33);
-  expect(term.log).toEqual(["reset", ["write", new Uint8Array([104, 105])], ["write", new Uint8Array([33])]]);
+  expect(term.log.map((entry) => [...entry[1]])).toEqual([[0x18, 0x1b, 0x63], [104, 105], [33]]);
   expect(last().sent).toEqual([{ t: "r", cols: 80, rows: 24 }]);
   expect(opened).toBe(1);
 });
