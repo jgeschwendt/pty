@@ -13,6 +13,8 @@ attach to one id at once (shared, multiplexed terminal).
 The library serves nothing itself — no endpoint, no auth, no page. The host owns
 all three.
 
+Design, invariants and plan: [`docs/index.html`](https://gigantic.dev/pty/).
+
 ## Architecture
 
 ```
