@@ -86,11 +86,17 @@ defmodule Pty.Session do
   registry or a log.
   """
   def ensure(id, opts \\ []) do
-    # The via-name registers before init/1 runs, so a live id never spawns.
+    # A live id is returned before anything is resolved. The via-name registers
+    # before init/1 runs, so a racing start never spawns twice.
     with true <- valid_id?(id) || {:error, :invalid_id},
+         :error <- whereis(id),
+         {:ok, spec} <- spec(opts),
          {:error, {:already_started, pid}} <-
-           DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, opts}}),
+           DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, spec}}),
          do: {:ok, pid}
+  catch
+    # A malformed option raises here as it once did in init/1: an error, not a crash.
+    :error, reason -> {:error, {reason, __STACKTRACE__}}
   end
 
   # whereis_name, not lookup: it drops a dead pid the registry has yet to reap.
@@ -173,19 +179,11 @@ defmodule Pty.Session do
   ## Server
 
   @impl true
-  def init({id, opts}) do
+  def init({id, spec}) do
     # Trap exits so terminate/2 runs on supervisor shutdown, and so the child's
     # exit arrives as a message through the erlexec link.
     Process.flag(:trap_exit, true)
-
-    cmd = resolve(opts, :command, "PTY_CMD", fn -> System.get_env("SHELL") || "/bin/sh" end)
-    args = resolve(opts, :args, "PTY_ARGS", fn -> [] end) |> List.wrap()
-    cols = resolve(opts, :cols, nil, fn -> 80 end)
-    rows = resolve(opts, :rows, nil, fn -> 24 end)
-    cap = resolve(opts, :scrollback, nil, fn -> 256_000 end)
-    cwd = resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)
-    env = env(opts)
-    command_line = Enum.join([cmd | args], " ")
+    command_line = Enum.join([spec.cmd | spec.args], " ")
 
     exec_opts = [
       :stdin,
@@ -202,37 +200,57 @@ defmodule Pty.Session do
       # A real terminal echoes typed input; keep echo on to match that.
       :pty_echo,
       # erlexec's winsz is {rows, cols} — the reverse of our cols/rows API.
-      {:winsz, {rows, cols}},
-      {:env, Map.to_list(env)},
-      {:cd, cwd}
+      {:winsz, {spec.rows, spec.cols}},
+      {:env, Map.to_list(spec.env)},
+      {:cd, spec.cwd}
     ]
 
-    # erlexec launches its child asynchronously: run/2 returns {:ok, ...} even for
-    # a missing binary or cwd and reports the failure later as an exit. A live
-    # {:ok, pid} for either would violate ensure/2's contract, so both are checked
-    # up front (see executable/3).
-    with {:ok, executable} <- executable(cmd, cwd, env),
-         argv = [executable | Enum.map(args, &String.to_charlist/1)],
-         {:ok, exec_pid, os_pid} <- :exec.run(argv, exec_opts) do
-      Logger.info("session #{id} started (#{command_line})")
+    case :exec.run([spec.executable | Enum.map(spec.args, &String.to_charlist/1)], exec_opts) do
+      {:ok, exec_pid, os_pid} ->
+        Logger.info("session #{id} started (#{command_line})")
 
+        {:ok,
+         %{
+           id: id,
+           exec_pid: exec_pid,
+           os_pid: os_pid,
+           command: command_line,
+           started: System.system_time(:second),
+           subs: %{},
+           buffer: :queue.new(),
+           buffer_bytes: 0,
+           cap: spec.cap,
+           exit: nil,
+           cols: spec.cols,
+           rows: spec.rows
+         }}
+
+      {:error, reason} ->
+        {:stop, {:spawn_failed, reason}}
+    end
+  end
+
+  # Resolved in the caller, never inside the one supervisor every start queues
+  # on: executable/3 probes the filesystem, and a hung mount must stall only its
+  # own start. erlexec launches its child asynchronously — run/2 returns {:ok, …}
+  # even for a missing binary or cwd — so both are checked here, up front.
+  defp spec(opts) do
+    cmd = resolve(opts, :command, "PTY_CMD", fn -> System.get_env("SHELL") || "/bin/sh" end)
+    cwd = resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)
+    env = env(opts)
+
+    with {:ok, executable} <- executable(cmd, cwd, env) do
       {:ok,
        %{
-         id: id,
-         exec_pid: exec_pid,
-         os_pid: os_pid,
-         command: command_line,
-         started: System.system_time(:second),
-         subs: %{},
-         buffer: :queue.new(),
-         buffer_bytes: 0,
-         cap: cap,
-         exit: nil,
-         cols: cols,
-         rows: rows
+         args: resolve(opts, :args, "PTY_ARGS", fn -> [] end) |> List.wrap(),
+         cap: resolve(opts, :scrollback, nil, fn -> 256_000 end),
+         cmd: cmd,
+         cols: resolve(opts, :cols, nil, fn -> 80 end),
+         cwd: cwd,
+         env: env,
+         executable: executable,
+         rows: resolve(opts, :rows, nil, fn -> 24 end)
        }}
-    else
-      {:error, reason} -> {:stop, {:spawn_failed, reason}}
     end
   end
 
@@ -262,7 +280,7 @@ defmodule Pty.Session do
     name = if cmd =~ "/", do: Path.expand(cmd, cwd), else: cmd
 
     case File.dir?(cwd) && :os.find_executable(String.to_charlist(name), String.to_charlist(path)) do
-      false -> {:error, :enoent}
+      false -> {:error, {:spawn_failed, :enoent}}
       executable -> {:ok, executable}
     end
   end

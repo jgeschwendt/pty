@@ -98,7 +98,8 @@
       <code class="code">start/2</code> meanwhile gets a fresh session, never the dying one.</li>
     <li><strong><code class="code">start/2</code> is idempotent and fail-closed</strong> on a missing
       binary or cwd, resolved as the child would (<code class="code">:cwd</code>,
-      <code class="code">:env</code> PATH).</li>
+      <code class="code">:env</code> PATH) — in the caller, outside the one supervisor every start
+      shares, so a hung mount stalls only its own start.</li>
     <li><strong>a bad client frame is <code class="code">:ignore</code></strong>, never a crashed
       session.</li>
     <li><strong>the first server frame is the scrollback, even empty</strong> — the attach signal.
