@@ -20,9 +20,10 @@ defmodule Pty.Socket do
     * `:reattach` — when true, never start a session: a client coming back to
       one it already had must not get a fresh shell under the old id.
     * `:ping_interval` — milliseconds between WebSocket pings, a positive
-      integer (default `30_000`; one `:timer` refuses closes `1011`). Only a received frame resets the server's idle timeout, so
-      the client's automatic pongs keep a live socket open; set the upgrade's
-      `:timeout` above this, and a client gone half-open is closed by it.
+      integer (default `30_000`; anything else closes `1011`, logged). Only a
+      received frame resets the server's idle timeout, so the client's
+      automatic pongs keep a live socket open; set the upgrade's `:timeout`
+      above this, and a client gone half-open is closed by it.
 
   ## Wire protocol
 
@@ -57,10 +58,14 @@ defmodule Pty.Socket do
 
   @impl true
   def init(%{session_id: id} = arg) do
+    ping = Map.get(arg, :ping_interval, 30_000)
+
     # Checked before either path: a reattach never reaches ensure/2's own check.
-    # The timer too, so an interval :timer refuses never spawns a session first.
+    # The interval too, so a bad one never spawns a session first — :timer takes
+    # a 0, and floods the socket with pings.
     with true <- Pty.valid_id?(id) || {:error, :invalid_id},
-         {:ok, _} <- :timer.send_interval(Map.get(arg, :ping_interval, 30_000), :ping),
+         true <- (is_integer(ping) and ping > 0) || {:error, {:invalid_ping_interval, ping}},
+         {:ok, _} <- :timer.send_interval(ping, :ping),
          {:ok, session} <- find(id, arg),
          {:ok, buffer} <- Pty.attach(session) do
       # Monitored, so even a session killed outright closes the socket.
