@@ -132,7 +132,7 @@
       <tbody>
         <tr data-code="4000"><td class="table-mono">4000</td><td>the session ended — its child exited or it was reaped</td><td>stop · <code class="code">onExit</code></td></tr>
         <tr data-code="4404"><td class="table-mono">4404</td><td>a reattach found no session, or the one found ended as it attached</td><td>stop · <code class="code">onExit</code></td></tr>
-        <tr data-code="4422"><td class="table-mono">4422</td><td>the spawn was refused — an invalid id, <code class="code">:command</code> or <code class="code">:cwd</code> not found, or erlexec rejected an option such as a bad <code class="code">:cols</code>; permanent</td><td>stop · <code class="code">onExit</code></td></tr>
+        <tr data-code="4422"><td class="table-mono">4422</td><td>an invalid id, reattaching or not, or a refused spawn — <code class="code">:command</code> or <code class="code">:cwd</code> not found, or erlexec rejected an option such as a bad <code class="code">:cols</code>; permanent</td><td>stop · <code class="code">onExit</code></td></tr>
         <tr data-code="1011"><td class="table-mono">1011</td><td>any other start failure — pty cannot tell a passing failure (resources) from a fault (an option that crashes init); the host's logs show which</td><td>reconnect</td></tr>
         <tr data-code="1000"><td class="table-mono">1000</td><td>never the session's: Bandit sends it on its own shutdown</td><td>reconnect</td></tr>
         <tr data-code="other"><td class="table-mono">other</td><td>transport loss, or an upgrade <code class="code">Pty.Plug</code> refused (<code class="code">400</code> bad id, <code class="code">403</code> origin) — backed off, since the backoff resets only on attach</td><td>reconnect, 1 s → 15 s</td></tr>

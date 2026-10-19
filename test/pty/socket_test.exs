@@ -68,8 +68,10 @@ defmodule Pty.SocketTest do
       end
 
       # A directly-mounted socket has no Pty.Plug in front to 400 a bad id.
-      assert {:stop, :normal, {@ws_close_refused, "invalid session id"}, %{session: nil}} =
-               Socket.init(%{session_id: "nl\n"})
+      for reattach <- [false, true] do
+        assert {:stop, :normal, {@ws_close_refused, "invalid session id"}, %{session: nil}} =
+                 Socket.init(%{session_id: "nl\n", reattach: reattach})
+      end
     end
 
     test "any other start failure closes 1011, the client retries, and the log says why" do
