@@ -72,15 +72,19 @@ defmodule Pty.SocketTest do
                Socket.init(%{session_id: "nl\n"})
     end
 
-    test "any other start failure closes 1011 and the client retries" do
+    test "any other start failure closes 1011, the client retries, and the log says why" do
       # An argument that is no string crashes init/1 past the spawn check.
-      {result, _log} =
+      id = fresh_id()
+
+      {result, log} =
         ExUnit.CaptureLog.with_log(fn ->
-          Socket.init(%{session_id: fresh_id(), session_opts: [args: [1]]})
+          Socket.init(%{session_id: id, session_opts: [args: [1]]})
         end)
 
       assert {:stop, :normal, {@ws_close_internal_error, "session unavailable"}, %{session: nil}} =
                result
+
+      assert log =~ "session #{id} unavailable: {:error, {:function_clause"
     end
 
     test ":session_opts configure the session this connection starts" do
