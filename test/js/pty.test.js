@@ -27,7 +27,9 @@ class Terminal {
   log = [];
   on = {};
   osc = [];
-  parser = { registerOscHandler: (_id, fn) => this.osc.push(fn) };
+  parser = {
+    registerOscHandler: (_id, fn) => (this.osc.push(fn), { dispose: () => this.osc.splice(this.osc.indexOf(fn), 1) }),
+  };
   rows = 24;
   unicode = {};
   constructor(settings) {
@@ -155,6 +157,7 @@ test("close() disposes every listener connect added to the terminal", () => {
   const term = new Terminal();
   Pty.connect(term, "/pty", { onTitle: () => {} }).close();
   expect(term.on).toEqual({});
+  expect(term.osc).toEqual([]);
 });
 
 test("4000, 4404 and 4422 are final: onExit, no reconnect", () => {
@@ -215,16 +218,19 @@ test("mount builds, fits, observes and loads every addon handed in", () => {
   expect(term.log.at(-1)).toBe("dispose");
 });
 
-test("OSC 52: writes reach the ClipboardAddon, reads never do", () => {
+test("OSC 52: writes reach the ClipboardAddon, reads never do — mounted, or loaded by the host", () => {
   const seen = [];
   const ClipboardAddon = class {
     activate(term) {
       term.parser.registerOscHandler(52, (data) => seen.push(data) > 0);
     }
   };
-  const { term } = Pty.mount({}, "/pty", { xterm: { ClipboardAddon, Terminal } });
-  for (const data of ["c;aGk=", "c;?", "p;?"]) term.osc.findLast((handler) => handler(data));
-  expect(seen).toEqual(["c;aGk="]);
+  const own = new Terminal();
+  own.loadAddon(new ClipboardAddon());
+  Pty.connect(own, "/pty");
+  for (const term of [Pty.mount({}, "/pty", { xterm: { ClipboardAddon, Terminal } }).term, own])
+    for (const data of ["c;aGk=", "c;?", "p;?"]) term.osc.findLast((handler) => handler(data));
+  expect(seen).toEqual(["c;aGk=", "c;aGk="]);
 });
 
 test("mount degrades: no addons, a WebGL that throws, no ResizeObserver", () => {
