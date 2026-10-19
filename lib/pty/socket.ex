@@ -34,9 +34,9 @@ defmodule Pty.Socket do
       client must take as transport loss, not as the end.
     * close `4404`: no session to attach — a reattach found none, or the one
       found ended as it attached.
-    * close `4422`: the spawn was refused — an id `Pty.valid_id?/1` rejects,
-      `:command` or `:cwd` not found, or erlexec rejected an option (e.g. a
-      bad `:cols`). Permanent.
+    * close `4422`: refused — an id `Pty.valid_id?/1` rejects, reattaching or
+      not, or a spawn whose `:command` or `:cwd` is not found or whose option
+      erlexec rejected (e.g. a bad `:cols`). Permanent.
     * close `1011`: any other start failure. Retried: pty cannot tell a passing
       failure (resources) from a fault (an option that crashes init); the
       host's logs show which.
@@ -57,7 +57,9 @@ defmodule Pty.Socket do
 
   @impl true
   def init(%{session_id: id} = arg) do
-    with {:ok, session} <- find(id, arg),
+    # Checked before either path: a reattach never reaches ensure/2's own check.
+    with true <- Pty.valid_id?(id) || {:error, :invalid_id},
+         {:ok, session} <- find(id, arg),
          {:ok, buffer} <- Pty.attach(session) do
       # Monitored, so even a session killed outright closes the socket.
       Process.monitor(session)

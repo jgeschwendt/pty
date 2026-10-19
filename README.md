@@ -95,8 +95,8 @@ first (even empty — it is the "attached" signal):
 - `{"t":"r","cols":C,"rows":R}` — resize
 
 The server closes `4000` when the session ends, `4404` when a reconnect
-(`?reattach`) finds no session, `4422` when the spawn is refused (an invalid
-id, `:command` or `:cwd` not found, or erlexec rejecting an option such as a
+(`?reattach`) finds no session, `4422` when the id is invalid (reattaching or
+not) or the spawn is refused (`:command` or `:cwd` not found, or erlexec rejecting an option such as a
 bad `:cols` — permanent), and `1011` for any other start failure, retried because pty cannot
 tell a passing failure (resources) from a fault (an option that crashes init);
 the host's logs show which. `1000` is never the session's: Bandit
