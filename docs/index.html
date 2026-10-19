@@ -94,7 +94,8 @@
       its child through the erlexec link.</li>
     <li><strong>reaps never go through the supervisor</strong> — <code class="code">GenServer.stop</code>,
       so a slow hangup never blocks <code class="code">start/2</code>; <code class="code">reap_all/0</code>
-      hangs up concurrently.</li>
+      hangs up concurrently. A reap frees its id before the hangup, so a
+      <code class="code">start/2</code> meanwhile gets a fresh session, never the dying one.</li>
     <li><strong><code class="code">start/2</code> is idempotent and fail-closed</strong> on a missing
       binary or cwd, resolved as the child would (<code class="code">:cwd</code>,
       <code class="code">:env</code> PATH).</li>

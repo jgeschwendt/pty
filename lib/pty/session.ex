@@ -13,8 +13,9 @@ defmodule Pty.Session do
   `kill_all/0`, or shutdown). Reaping hangs the child up the way a closed
   window does — SIGHUP, and a child still alive 2 s later gets SIGTERM, then
   SIGKILL 1 s after, both to its process group — relays what it prints on the
-  way out, and returns once it is gone. Either way every subscriber receives
-  `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap —
+  way out, and returns once it is gone. Its id is free from the first instant,
+  so an `ensure/2` mid-hangup starts a fresh session. Either way every
+  subscriber receives `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap —
   unless the session is killed outright (`:kill`, or the supervisor's brutal
   kill past its shutdown timeout), which skips `terminate/2`; monitor it.
   A session killed outright still takes its child along: erlexec links the
@@ -92,11 +93,12 @@ defmodule Pty.Session do
          do: {:ok, pid}
   end
 
+  # whereis_name, not lookup: it drops a dead pid the registry has yet to reap.
   @doc "Look up a live session by id."
   def whereis(id) do
-    case Registry.lookup(@registry, id) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> :error
+    case Registry.whereis_name({@registry, id}) do
+      :undefined -> :error
+      pid -> {:ok, pid}
     end
   end
 
@@ -363,9 +365,12 @@ defmodule Pty.Session do
   # once. A live child is hung up and awaited; the link guarantees its EXIT
   # (port_closed at worst). A reap reports 129 — 128 + SIGHUP, as a shell
   # reports a hung-up child — whatever erlexec says: it overrides the status of
-  # any child it stopped with 0.
+  # any child it stopped with 0. The id is freed first, so a start/2 during a
+  # slow hangup gets a fresh session, not this dying one.
   @impl true
   def terminate(_reason, state) do
+    Registry.unregister(@registry, state.id)
+
     code =
       state.exit ||
         (

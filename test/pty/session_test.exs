@@ -138,6 +138,7 @@ defmodule Pty.SessionTest do
 
     assert Session.kill(id) == :ok
     refute find_session(id)
+    assert Session.whereis(id) == :error
     assert Session.kill("does-not-exist") == {:error, :not_found}
 
     ready(start_session())
@@ -176,12 +177,17 @@ defmodule Pty.SessionTest do
       refute alive?(os_pid)
     end
 
-    test "a child deaf to HUP and TERM is killed with its process group, still a 129" do
+    test "a child deaf to HUP and TERM is killed with its process group, still a 129; its id is free at once" do
       pid = start_sh_session(args: ["-c", "trap '' HUP TERM; sleep 30 & echo bg=$! .; wait"])
       [_, bg] = Regex.run(~r/bg=(\d+) \./, recv_until_marker(" ."))
-      os_pid = :sys.get_state(pid).os_pid
+      %{id: id, os_pid: os_pid} = :sys.get_state(pid)
 
-      assert Session.kill(pid) == :ok
+      reap = Task.async(fn -> Session.kill(pid) end)
+      # Mid-hangup, a start gets a fresh session rather than the dying one.
+      poll_until(fn -> Session.whereis(id) == :error end)
+      assert {:ok, fresh} = Session.ensure(id)
+      assert fresh != pid
+      assert Task.await(reap) == :ok
       assert_receive {:pty_exit, 129}
       refute alive?(os_pid)
       # The orphaned sleep is reaped by launchd, not erlexec: a zombie answers kill -0.
