@@ -97,7 +97,8 @@
       so a slow hangup never blocks <code class="code">start/2</code>; <code class="code">reap_all/0</code>
       hangs up concurrently. A reap frees its id before the hangup, so a
       <code class="code">start/2</code> meanwhile gets a fresh session, never the dying one, while a
-      second <code class="code">reap/1</code> by id still finds the dying one and returns once it is gone.</li>
+      second <code class="code">reap/1</code> by id reaps that fresh one if there is one, else finds the
+      dying one and returns once it is gone.</li>
     <li><strong><code class="code">start/2</code> is idempotent and fail-closed</strong> on a missing
       binary or cwd, resolved as the child would (<code class="code">:cwd</code>,
       <code class="code">:env</code> PATH) — in the caller, outside the one supervisor every start
