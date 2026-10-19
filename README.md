@@ -129,7 +129,9 @@ attached, so a refused upgrade backs off instead of hammering — and every
 reconnect is attach-only: a session that ended while the client was away
 closes `4404` rather than respawning under the old id. `4000`, `4404` and
 `4422` stop it and fire `onExit`; every other close, `1000` included, reconnects.
-`Pty.connect(term, url, opts)` wires a Terminal you built yourself.
+`Pty.connect(term, url, opts)` wires a Terminal you built yourself; its
+`close()` unwires it, listeners included, so the Terminal can be connected
+again.
 
 ## Integrating
 

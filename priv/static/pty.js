@@ -113,11 +113,15 @@
       };
     }
 
-    term.onData(function (data) {
-      send({ t: "i", d: data });
-    });
-    term.onResize(sendDims);
-    if (opts.onTitle) term.onTitleChange(opts.onTitle);
+    // Disposed on close, so a host-built terminal reconnected later does not
+    // carry this connection's listeners too.
+    var listeners = [
+      term.onData(function (data) {
+        send({ t: "i", d: data });
+      }),
+      term.onResize(sendDims),
+    ];
+    if (opts.onTitle) listeners.push(term.onTitleChange(opts.onTitle));
 
     open();
 
@@ -127,6 +131,9 @@
       close: function () {
         closed = true;
         clearTimeout(timer);
+        listeners.forEach(function (listener) {
+          listener.dispose();
+        });
         if (socket) socket.close();
       },
       get socket() {

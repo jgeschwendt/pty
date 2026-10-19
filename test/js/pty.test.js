@@ -141,6 +141,12 @@ test("transport loss backs off 1 s → 15 s; an attach resets it and reattaches"
   expect(closes).toHaveLength(7);
 });
 
+test("close() disposes every listener connect added to the terminal", () => {
+  const term = new Terminal();
+  Pty.connect(term, "/pty", { onTitle: () => {} }).close();
+  expect(term.on).toEqual({});
+});
+
 test("4000, 4404 and 4422 are final: onExit, no reconnect", () => {
   for (const code of [4000, 4404, 4422]) {
     const exits = [];
