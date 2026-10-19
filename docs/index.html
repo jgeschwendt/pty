@@ -62,6 +62,7 @@
       pid. The API, the integration recipes and the security model are in the
       <a class="link" href="https://github.com/jgeschwendt/pty#readme">README</a>.</p>
   </header>
+  <figure class="figure"><img class="figure-light" src="figures/session-lifecycle.png" alt="Pty.start/2 spawns a child through erlexec into a Pty.Session, which fans each output chunk out to every subscriber and onto a bounded scrollback. The session ends only when the child exits (its status) or a reap stops it (129); either way terminate/2 sends every subscriber one {:pty_exit, code}. A reap hangs up the child's process group: SIGHUP at once, a 2 s grace, then SIGTERM, then SIGKILL 1 s later." /><img class="figure-dark" src="figures/session-lifecycle-dark.png" alt="" aria-hidden="true" loading="lazy" /><figcaption>The session lifecycle: start and attach, fan-out and scrollback, the two ends, and the hangup ladder a reap runs. Source: Claude Design canvas <code class="code">pty figures</code>, board session-lifecycle.</figcaption></figure>
   <div class="table-wrap">
     <table data-table>
       <thead><tr><th>path</th><th>holds</th></tr></thead>
@@ -142,6 +143,7 @@
       </tbody>
     </table>
   </div>
+  <figure class="figure"><img class="figure-light" src="figures/close-codes.png" alt="A table of close codes. 4000 session ended, 4404 no session for a reattach, 4422 spawn refused: pty.js stops and fires onExit. 1011 any other start failure, 1000 Bandit's own shutdown, and any other close or a refused upgrade: pty.js reconnects. Below, the client loop: connect, the first frame (the scrollback) resets backoff to 1 s and marks the client attached so later connects add ?reattach, then on close either stop or retry with backoff doubling from 1 s to 15 s." /><img class="figure-dark" src="figures/close-codes-dark.png" alt="" aria-hidden="true" loading="lazy" /><figcaption>WebSocket close codes and the client loop in <code class="code">pty.js</code>. Source: Claude Design canvas <code class="code">pty figures</code>, board close-codes.</figcaption></figure>
 </section>
 
 <section class="docs-section" id="hazards" data-component="hazards">
@@ -186,7 +188,6 @@
     <p class="docs-note">What the next shift does first. <code class="code">shift brief</code> reads this list, and a landing that changes it edits it here.</p>
   </header>
   <ol class="steps" id="next">
-    <li>Draw the <code class="code">pty figures</code> Claude Design canvas (session lifecycle; close codes and the client loop), export it under <code class="code">docs/figures/</code> behind <code class="code">mise run figures</code>, and place both figures on this page — needs a session that may publish artifacts.</li>
     <li><code class="code">bun test --coverage</code> reports 100 % of <code class="code">pty.js</code> but enforces nothing, and bun measures lines and functions, not branches — <code class="code">mount()</code>'s degrade paths are held by their test, not the metric: add <code class="code">bunfig.toml</code> with <code class="code">[test] coverageThreshold = { functions = 1.0, lines = 1.0 }</code> — the shift sandbox refuses writing bun config.</li>
     <li><code class="code">list/0</code> drops a session busy past the 1 s info timeout.</li>
     <li>Sweep leftovers, confirmed and unfixed (s-20261019T0620Z): a restarted Registry leaves live sessions unregistered; scrollback replay can start mid-UTF-8 or mid-escape; the resize skip compares against the last requested size, not the PTY's; a lone UTF-16 surrogate drops a whole input frame; subscriber messages carry no session id; the scrollback cap ignores per-chunk overhead of tiny chunks.</li>

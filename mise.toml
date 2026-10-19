@@ -4,3 +4,7 @@ erlang = "28.5.0.2"
 elixir = "1.20.2-otp-28"
 # hk runs the pre-push gate (hk.pkl); `hk install --mise` wires it per clone.
 hk = "2.5.0"
+
+[tasks.figures]
+description = "render every board of the Claude Design canvas in docs/figures/project/ to its PNG and its -dark PNG (agent-browser, 2×)"
+run = "sh docs/figures/export.sh"
