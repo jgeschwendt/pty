@@ -102,7 +102,7 @@ defmodule Pty.SessionTest do
       assert Task.await(task) =~ live
     end
 
-    test "one past :max_lag is dropped with a single {:pty_lagged}, bounded; a reattach resumes; the rest never lag" do
+    test "one past :max_lag is held off the feed with a single {:pty_lagged}, bounded; a reattach resumes; the rest never lag" do
       pid =
         start_sh_session(
           args: ["-c", "for i in $(seq 20); do echo $i; sleep 0.01; done; echo done; exec cat"],
@@ -112,7 +112,9 @@ defmodule Pty.SessionTest do
       task = Task.async(fn -> recv_until_marker("done") end)
       {:ok, _} = Session.attach(pid, task.pid)
       assert Task.await(task) =~ "done"
-      poll_until(fn -> Session.info(pid).subscribers == 0 end)
+      # Still a monitored subscriber, counted: only off the feed.
+      poll_until(fn -> Process.info(pid, :monitors) == {:monitors, [process: self()]} end)
+      assert Session.info(pid).subscribers == 1
 
       # The stalled mailbox stops at max_lag + 1 chunks and the one notice.
       for _ <- 0..3, do: assert_received({:pty_data, _})
@@ -120,6 +122,7 @@ defmodule Pty.SessionTest do
       refute_received _
 
       {:ok, _} = Session.attach(pid, self())
+      assert Process.info(pid, :monitors) == {:monitors, [process: self()]}
       Session.input(pid, "back\n")
       recv_until_marker("back")
     end
@@ -139,8 +142,11 @@ defmodule Pty.SessionTest do
       state = %{os_pid: 1, subs: subs, buffer: :queue.new(), buffer_bytes: 0, cap: 0, max_lag: -1}
 
       assert {:noreply, %{subs: kept}} = Session.handle_info({:stdout, 1, "x"}, state)
-      assert kept == Map.delete(subs, self())
+      assert kept == %{subs | self() => {:lagged, subs[self()]}}
       assert_received {:pty_lagged}
+      # A detach demonitors a lagged one too.
+      assert Session.handle_cast({:detach, self()}, %{state | subs: kept}) ==
+               {:noreply, %{state | subs: Map.delete(subs, self())}}
     end
   end
 
@@ -247,9 +253,15 @@ defmodule Pty.SessionTest do
       poll_until(fn -> not alive?(String.to_integer(bg)) end)
     end
 
-    test "a kill by id during another reap's hangup returns once the child is gone" do
+    test "a kill by id during another reap's hangup returns once the child is gone; its flood is bounded too" do
       pid =
-        start_sh_session(args: ["-c", "trap '' HUP TERM; echo up; while :; do sleep 0.1; done"])
+        start_sh_session(
+          args: [
+            "-c",
+            "trap '' TERM; trap 'seq 100000' HUP; echo up; while :; do sleep 0.1; done"
+          ],
+          max_lag: 3
+        )
 
       recv_until_marker("up")
       %{id: id, os_pid: os_pid} = :sys.get_state(pid)
@@ -259,6 +271,11 @@ defmodule Pty.SessionTest do
       assert Session.kill(id) == :ok
       refute alive?(os_pid)
       assert Task.await(reap) == :ok
+      # The hangup relays through the same max_lag; a lagged subscriber still hears the end.
+      for _ <- 0..3, do: assert_received({:pty_data, _})
+      assert_received {:pty_lagged}
+      assert_received {:pty_exit, 129}
+      refute_received _
     end
 
     test "a crashed session still tells subscribers and takes its child along" do

@@ -58,8 +58,14 @@ defmodule Pty.SocketTest do
     end
 
     test "a refused spawn or id closes 4422 — permanent, the client stops" do
-      # A missing binary (:enoent), and an option erlexec rejects (:invalid_option).
-      for opts <- [[command: "/nonexistent/definitely-not-a-binary"], [cols: "x"]] do
+      # A missing binary (:enoent), an option erlexec rejects (:invalid_option),
+      # and a :max_lag that is no positive integer (refused before any spawn).
+      for opts <- [
+            [command: "/nonexistent/definitely-not-a-binary"],
+            [cols: "x"],
+            [max_lag: 0],
+            [max_lag: nil]
+          ] do
         {result, _log} =
           ExUnit.CaptureLog.with_log(fn ->
             Socket.init(%{session_id: fresh_id(), session_opts: opts})

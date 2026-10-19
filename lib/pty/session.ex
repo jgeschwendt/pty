@@ -41,8 +41,11 @@ defmodule Pty.Session do
   | `:scrollback`| `:scrollback`            | —          | `256_000` bytes      |
   | `:max_lag`   | `:max_lag`               | —          | `1_000` messages     |
 
-  A subscriber more than `:max_lag` messages behind is dropped and sent one
-  `{:pty_lagged}` in place of the feed; it reattaches to resync from the scrollback.
+  `:max_lag` must be a positive integer; anything else is refused as
+  `{:error, {:spawn_failed, {:invalid_option, {:max_lag, value}}}}`. A local
+  subscriber more than `:max_lag` messages behind is sent one `{:pty_lagged}`
+  in place of the feed and taken off it, the hangup's relay included; it still
+  receives the `{:pty_exit, code}`, and reattaches to resync from the scrollback.
 
   ## Environment
 
@@ -256,8 +259,14 @@ defmodule Pty.Session do
     cmd = resolve(opts, :command, "PTY_CMD", fn -> System.get_env("SHELL") || "/bin/sh" end)
     cwd = resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)
     env = env(opts)
+    max_lag = resolve(opts, :max_lag, nil, fn -> 1_000 end)
 
-    with {:ok, executable} <- executable(cmd, cwd, env) do
+    # Any non-number outranks every integer in term order, so nil or :infinity
+    # would disable the bound unseen; 0 or less would drop every subscriber.
+    with true <-
+           (is_integer(max_lag) and max_lag > 0) ||
+             {:error, {:spawn_failed, {:invalid_option, {:max_lag, max_lag}}}},
+         {:ok, executable} <- executable(cmd, cwd, env) do
       {:ok,
        %{
          args: resolve(opts, :args, "PTY_ARGS", fn -> [] end) |> List.wrap(),
@@ -267,7 +276,7 @@ defmodule Pty.Session do
          cwd: cwd,
          env: env,
          executable: executable,
-         max_lag: resolve(opts, :max_lag, nil, fn -> 1_000 end),
+         max_lag: max_lag,
          rows: resolve(opts, :rows, nil, fn -> 24 end)
        }}
     end
@@ -322,15 +331,16 @@ defmodule Pty.Session do
   end
 
   # A re-attach keeps its monitor: one per subscriber, however often it asks.
+  # A lagged one is put back on the feed.
   def handle_call({:attach, sub}, _from, state) do
     {:reply, {:ok, state.buffer |> :queue.to_list() |> IO.iodata_to_binary()},
-     update_in(state.subs, &Map.put_new_lazy(&1, sub, fn -> Process.monitor(sub) end))}
+     put_in(state.subs[sub], unlag(state.subs[sub] || Process.monitor(sub)))}
   end
 
   @impl true
   def handle_cast({:detach, sub}, state) do
     {ref, state} = pop_in(state.subs[sub])
-    ref && Process.demonitor(ref, [:flush])
+    ref && Process.demonitor(unlag(ref), [:flush])
     {:noreply, state}
   end
 
@@ -348,10 +358,8 @@ defmodule Pty.Session do
   end
 
   @impl true
-  def handle_info({:stdout, os_pid, data}, %{os_pid: os_pid} = state) do
-    subs = Map.filter(state.subs, &feed(&1, data, state.max_lag))
-    {:noreply, append(%{state | subs: subs}, data)}
-  end
+  def handle_info({:stdout, os_pid, data}, %{os_pid: os_pid} = state),
+    do: {:noreply, append(feed(state, data), data)}
 
   # The child exited: the link delivers its status. terminate/2 tells subscribers.
   def handle_info({:EXIT, exec_pid, reason}, %{exec_pid: exec_pid} = state),
@@ -397,26 +405,32 @@ defmodule Pty.Session do
   defp trim(state), do: state
 
   # A subscriber past max_lag queued messages gets one {:pty_lagged} in place of
-  # the chunk and is dropped: unread, its mailbox would grow the VM by the
-  # child's whole output. It reattaches to resync from the scrollback, as tmux
-  # does. Process.info/2 raises on a remote pid, so only a local one is measured;
-  # a dead one is nil, sent to as before, and dropped by its DOWN.
+  # the chunk and is held as {:lagged, ref}: off the feed, since unread its
+  # mailbox would grow the VM by the child's whole output, but still monitored,
+  # counted, and told the exit. It reattaches to resync from the scrollback, as
+  # tmux does. Process.info/2 raises on a remote pid, so only a local one is
+  # measured; a dead one is nil, sent to as before, and dropped by its DOWN.
+  defp feed(state, data), do: %{state | subs: Map.new(state.subs, &feed(&1, data, state.max_lag))}
+
+  defp feed({_sub, {:lagged, _}} = lagged, _data, _max_lag), do: lagged
+
   defp feed({sub, ref}, data, max_lag) do
     if node(sub) == node() and
          match?({_, n} when n > max_lag, Process.info(sub, :message_queue_len)) do
-      Process.demonitor(ref, [:flush])
       send(sub, {:pty_lagged})
-      false
+      {sub, {:lagged, ref}}
     else
       send(sub, {:pty_data, data})
+      {sub, ref}
     end
   end
 
-  defp broadcast(subs, msg), do: :maps.foreach(fn sub, _ref -> send(sub, msg) end, subs)
+  defp unlag({:lagged, ref}), do: ref
+  defp unlag(ref), do: ref
 
-  # Every end — exit, reap, crash — passes here, so every subscriber hears it
-  # once. A live child is hung up and awaited; the link guarantees its EXIT
-  # (port_closed at worst). A reap reports 129 — 128 + SIGHUP, as a shell
+  # Every end — exit, reap, crash — passes here, so every subscriber, lagged
+  # included, hears it once. A live child is hung up and awaited; the link
+  # guarantees its EXIT (port_closed at worst). A reap reports 129 — 128 + SIGHUP, as a shell
   # reports a hung-up child — whatever erlexec says: it overrides the status of
   # any child it stopped with 0. The id is freed first, so a start/2 during a
   # slow hangup gets a fresh session, not this dying one; the reaping key, taken
@@ -426,30 +440,29 @@ defmodule Pty.Session do
     Registry.register(@registry, {:reaping, state.id, self()}, nil)
     Registry.unregister(@registry, state.id)
 
-    code =
-      state.exit ||
-        (
-          :exec.kill(state.os_pid, :sighup)
-          Process.send_after(self(), :hangup_grace, @hangup_grace_ms)
-          await_exit(state)
-        )
+    state =
+      with %{exit: nil} <- state do
+        :exec.kill(state.os_pid, :sighup)
+        Process.send_after(self(), :hangup_grace, @hangup_grace_ms)
+        await_exit(state)
+      end
 
-    broadcast(state.subs, {:pty_exit, code})
+    :maps.foreach(fn sub, _ref -> send(sub, {:pty_exit, state.exit}) end, state.subs)
   end
 
-  # Relays what the child prints on its way out; past the grace, stops it.
+  # Relays what the child prints on its way out, bounded by max_lag as the live
+  # feed is; past the grace, stops it.
   defp await_exit(%{exec_pid: exec_pid, os_pid: os_pid} = state) do
     receive do
       {:stdout, ^os_pid, data} ->
-        broadcast(state.subs, {:pty_data, data})
-        await_exit(state)
+        await_exit(feed(state, data))
 
       :hangup_grace ->
         :exec.stop(exec_pid)
         await_exit(state)
 
       {:EXIT, ^exec_pid, _reason} ->
-        129
+        %{state | exit: 129}
     end
   end
 end
