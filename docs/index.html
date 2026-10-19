@@ -72,7 +72,8 @@
         <tr><td class="table-mono">lib/pty/socket.ex</td><td>the <code class="code">WebSock</code> handler bridging one socket to a session</td></tr>
         <tr><td class="table-mono">lib/pty/plug.ex</td><td>the upgrade gate: id validation, <code class="code">Origin</code> check, hand-off</td></tr>
         <tr><td class="table-mono">priv/static/pty.js</td><td>browser glue; the host hands xterm.js in</td></tr>
-        <tr><td class="table-mono">test/</td><td>ExUnit over real <code class="code">cat</code>/<code class="code">sh</code> PTYs — no mocks</td></tr>
+        <tr><td class="table-mono">test/pty/</td><td>ExUnit over real <code class="code">cat</code>/<code class="code">sh</code> PTYs — no mocks</td></tr>
+        <tr><td class="table-mono">test/js/</td><td><code class="code">bun test</code> drives <code class="code">pty.js</code>, unmodified, against hand-written fakes of the WebSocket, the timers and xterm.js</td></tr>
       </tbody>
     </table>
   </div>
@@ -104,8 +105,9 @@
     <li><strong>a bad client frame is <code class="code">:ignore</code></strong>, never a crashed
       session.</li>
     <li><strong>the first server frame is the scrollback, even empty</strong> — the attach signal.
-      <code class="code">pty.js</code> resets its backoff only then, and every reconnect is
-      <code class="code">?reattach</code>, attach-only.</li>
+      <code class="code">pty.js</code> resets its backoff only then, and every reconnect after the
+      first attach is <code class="code">?reattach</code>, attach-only; a retry before it may still
+      spawn.</li>
     <li><strong>idleness never closes a terminal, silence does</strong> — a terminal is idle whenever
       its human is thinking, so <code class="code">Pty.Socket</code> pings every
       <code class="code">:ping_interval</code> (30 s) and the browser's automatic pongs reset
@@ -174,7 +176,7 @@
   </header>
   <ol class="steps" id="next">
     <li>Draw the <code class="code">pty figures</code> Claude Design canvas (session lifecycle; close codes and the client loop), export it under <code class="code">docs/figures/</code> behind <code class="code">mise run figures</code>, and place both figures on this page — needs a session that may publish artifacts.</li>
-    <li><code class="code">bun test --coverage</code> reports 100 % of <code class="code">pty.js</code> but enforces nothing: add <code class="code">bunfig.toml</code> with <code class="code">[test] coverageThreshold = { functions = 1.0, lines = 1.0 }</code> — the shift sandbox refuses writing bun config.</li>
+    <li><code class="code">bun test --coverage</code> reports 100 % of <code class="code">pty.js</code> but enforces nothing, and bun measures lines and functions, not branches — <code class="code">mount()</code>'s degrade paths are held by their test, not the metric: add <code class="code">bunfig.toml</code> with <code class="code">[test] coverageThreshold = { functions = 1.0, lines = 1.0 }</code> — the shift sandbox refuses writing bun config.</li>
     <li><code class="code">list/0</code> drops a session busy past the 1 s info timeout.</li>
   </ol>
   <p class="docs-foot">pty · <a class="link" href="https://github.com/jgeschwendt/pty">jgeschwendt/pty</a> · the README is the API reference.</p>

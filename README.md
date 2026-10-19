@@ -70,15 +70,18 @@ Pty.reap(id)                             # hang the child up, end the session
 | `detach/2`             | Unsubscribe. The PTY is untouched.                                |
 | `write/2`              | Write to the PTY's stdin.                                         |
 | `resize/3`             | Resize the PTY (SIGWINCH to the child).                           |
-| `info/1`, `list/0`     | Metadata: command, uptime, subscribers, buffer size, dimensions.  |
+| `info/1`, `list/0`     | Metadata: id, command, `started` (unix s), subscribers, buffer size, dimensions. |
 | `reap/1`, `reap_all/0` | End sessions by hanging up (see Notes); `reap_all` concurrently.  |
 | `asset_dir/0`          | Where `pty.js` lives, for `Plug.Static` or a copy step.           |
 
-Every function takes a session as an **id** or a **pid**; an id naming no live
-session is `{:error, :not_found}`. Spawn options (`:command`, `:args`, `:cwd`,
-`:cols`, `:rows`, `:scrollback`) resolve as **option › application env › OS env
+Every function that takes a session takes its **id** or its **pid**; an id
+naming no live session is `{:error, :not_found}`, except from `info/1`, which
+returns `nil`. Spawn options (`:command`, `:args`, `:cwd`, `:env`, `:cols`,
+`:rows`, `:scrollback`) resolve as **option › application env › OS env
 (`PTY_CMD`, `PTY_ARGS`, `PTY_CWD`) › default**, and apply only when `start/2`
-actually starts something. `start/2` is fail-closed: erlexec launches its child
+actually starts something. `:env` (a map or list of pairs) layers over the
+environment erlexec snapshotted at boot — a later `System.put_env/2` never
+reaches a session — and `false` unsets an inherited variable. `start/2` is fail-closed: erlexec launches its child
 asynchronously, so `:command` is resolved up front as the child would resolve
 it — a path against `:cwd`, a bare name on the `PATH` in `:env` or inherited —
 and a missing binary or `:cwd` is `{:error, _}` rather than a live pid over a
@@ -128,9 +131,10 @@ term.dispose();  // unmount: detaches the client, the PTY keeps running
 are swallowed, since the reply would hand the viewer's clipboard to the shell
 and so to everyone attached to the session). It reconnects
 with exponential backoff on transport loss — reset only once a socket is
-attached, so a refused upgrade backs off instead of hammering — and every
-reconnect is attach-only: a session that ended while the client was away
-closes `4404` rather than respawning under the old id. `4000`, `4404` and
+attached, so a refused upgrade backs off instead of hammering — and once
+attached, every reconnect is attach-only (`?reattach`): a session that ended
+while the client was away closes `4404` rather than respawning under the old
+id. A retry before the first attach may still spawn. `4000`, `4404` and
 `4422` stop it and fire `onExit`; every other close, `1000` included, reconnects.
 `Pty.connect(term, url, opts)` wires a Terminal you built yourself — load
 its `ClipboardAddon` first, so the read guard `connect` adds is tried ahead of

@@ -25,8 +25,8 @@ defmodule Pty.Plug do
       loopback, where every local port shares the host; `false` disables it. A request with
       no `Origin` — a non-browser client — always passes.
     * `:param` — query parameter carrying the session id (default `"s"`). A
-      `reattach` parameter (any value), which `pty.js` sends on every reconnect,
-      makes the connection attach-only (see `Pty.Socket`).
+      `reattach` parameter (any value), which `pty.js` sends on every reconnect
+      after its first attach, makes the connection attach-only (see `Pty.Socket`).
     * `:ping_interval` — milliseconds between the WebSocket pings `Pty.Socket`
       sends, a positive integer (default `30_000`; see its init argument).
     * `:session_opts` — spawn options (see `Pty.Session`) for a session this
