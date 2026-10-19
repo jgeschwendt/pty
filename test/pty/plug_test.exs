@@ -43,10 +43,11 @@ defmodule Pty.PlugTest do
   end
 
   test "an upgrade request is handed to Pty.Socket, reattach flag and all" do
-    # A 1-arity :session_opts is resolved against the conn before the hand-off.
-    opts = Pty.Plug.init(session_opts: &[cwd: &1.query_params["s"]])
-
-    for {query, reattach} <- [{"s=abc", false}, {"s=abc&reattach=1", true}] do
+    # :session_opts as a list, or a 1-arity fun resolved against the conn before the hand-off.
+    for {query, reattach, session_opts} <- [
+          {"s=abc", false, [cwd: "abc"]},
+          {"s=abc&reattach=1", true, &[cwd: &1.query_params["s"]]}
+        ] do
       conn =
         conn(:get, "/pty?" <> query)
         |> Map.put(:req_headers, [
@@ -56,7 +57,7 @@ defmodule Pty.PlugTest do
           {"sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="},
           {"sec-websocket-version", "13"}
         ])
-        |> Pty.Plug.call(opts)
+        |> Pty.Plug.call(Pty.Plug.init(session_opts: session_opts))
 
       assert [{:websocket, {Pty.Socket, arg, _}}] = Plug.Test.sent_upgrades(conn)
       assert arg == %{session_id: "abc", session_opts: [cwd: "abc"], reattach: reattach}
@@ -88,7 +89,9 @@ defmodule Pty.PlugTest do
           {"localhost", ["https://evil.example"], check_origin: false},
           {"localhost", ["https://app.example"], check_origin: ["https://app.example"]}
         ] do
-      assert_raise WebSockAdapter.UpgradeError, fn -> upgrade.(host, origins, opts) end
+      # Past the gate, a bare `upgrade: websocket` fails RFC 6455 (no key,
+      # version or `connection: upgrade`): a 426, not a raise and a 500.
+      assert %{status: @status_upgrade_required} = upgrade.(host, origins, opts)
     end
 
     assert_raise ArgumentError, fn -> Pty.Plug.init(check_origin: nil) end
