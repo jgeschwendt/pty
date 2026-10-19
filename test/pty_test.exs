@@ -78,9 +78,15 @@ defmodule PtyTest do
   end
 
   describe "resize/3" do
-    test "takes a pid as readily as an id" do
+    test "takes a pid as readily as an id; an ill-typed write or resize fails in the caller" do
       id = start_session()
       {:ok, pid} = Pty.lookup(id)
+
+      # apply/3: ill-typed on purpose, which the compiler would flag. A cast
+      # would carry them into the session and crash it.
+      for {fun, args} <- [resize: [pid, 80.5, 24], write: [pid, ~c"ls\n"]] do
+        assert_raise FunctionClauseError, fn -> apply(Pty, fun, args) end
+      end
 
       assert Pty.resize(pid, @resize_cols, @resize_rows) == :ok
 
