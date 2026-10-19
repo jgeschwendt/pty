@@ -40,6 +40,13 @@ defmodule Pty.SessionTest do
         assert recv_until_marker("resolved") =~ "resolved"
       end
 
+      # Resolved in the caller, outside the one supervisor every start shares:
+      # neither a refusal nor a live id (nor a hung mount) waits on it.
+      {id, pid} = start_session()
+      :sys.suspend(Pty.SessionSupervisor)
+      on_exit(fn -> :sys.resume(Pty.SessionSupervisor) end)
+      assert {:ok, ^pid} = Session.ensure(id)
+
       assert {:error, {:spawn_failed, :enoent}} =
                Session.ensure(Session.new_id(), command: "probe")
 
