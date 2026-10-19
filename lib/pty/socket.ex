@@ -41,6 +41,7 @@ defmodule Pty.Socket do
   """
 
   @behaviour WebSock
+  require Logger
 
   alias Pty.Client
   alias Pty.Session
@@ -71,7 +72,10 @@ defmodule Pty.Socket do
       when reason == :enoent or elem(reason, 0) == :invalid_option ->
         close(@ws_close_refused, "spawn refused")
 
-      _ ->
+      # Neither the supervisor nor a failed init/1 logs; this line is how the
+      # host tells a passing failure from a fault.
+      error ->
+        Logger.error("session #{id} unavailable: #{inspect(error)}")
         close(@ws_close_internal_error, "session unavailable")
     end
   end
