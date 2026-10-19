@@ -1,6 +1,7 @@
 defmodule Pty.AssetTest do
   # Characterizes the shipped browser glue: hosts load it by path, so its
-  # location and entry points are part of the library's contract.
+  # location and entry points are part of the library's contract. Its
+  # behaviour is test/js's.
   use ExUnit.Case, async: true
 
   setup do
@@ -10,13 +11,6 @@ defmodule Pty.AssetTest do
   test "pty.js ships in priv/static and exports both entry points", %{js: js} do
     assert js =~ "connect: connect"
     assert js =~ "mount: mount"
-  end
-
-  test "it speaks the wire protocol Pty.Socket expects", %{js: js} do
-    assert js =~ ~s|t: "i"|
-    assert js =~ ~s|t: "r"|
-    assert js =~ "arraybuffer"
-    assert js =~ "[4000, 4404, 4422]"
   end
 
   test "it imports nothing — the host owns xterm.js and the framework", %{js: js} do

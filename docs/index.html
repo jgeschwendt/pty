@@ -172,7 +172,7 @@
   </header>
   <ol class="steps" id="next">
     <li>Draw the <code class="code">pty figures</code> Claude Design canvas (session lifecycle; close codes and the client loop), export it under <code class="code">docs/figures/</code> behind <code class="code">mise run figures</code>, and place both figures on this page — needs a session that may publish artifacts.</li>
-    <li><code class="code">pty.js</code> has no behavioural test — <code class="code">asset_test</code> only greps it.</li>
+    <li><code class="code">bun test --coverage</code> reports 100 % of <code class="code">pty.js</code> but enforces nothing: add <code class="code">bunfig.toml</code> with <code class="code">[test] coverageThreshold = { functions = 1.0, lines = 1.0 }</code> — the shift sandbox refuses writing bun config.</li>
     <li><code class="code">list/0</code> drops a session busy past the 1 s info timeout.</li>
   </ol>
   <p class="docs-foot">pty · <a class="link" href="https://github.com/jgeschwendt/pty">jgeschwendt/pty</a> · the README is the API reference.</p>

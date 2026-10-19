@@ -6,7 +6,7 @@ hooks {
   ["pre-push"] {
     steps {
       ["gate"] {
-        check = "unset $(git rev-parse --local-env-vars); mise x -- mix format --check-formatted && mise x -- mix compile --warnings-as-errors && mise x -- mix test --cover"
+        check = "unset $(git rev-parse --local-env-vars); mise x -- mix format --check-formatted && mise x -- mix compile --warnings-as-errors && mise x -- mix test --cover && mise x -- bun test --coverage"
       }
     }
   }
