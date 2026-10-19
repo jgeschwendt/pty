@@ -14,7 +14,8 @@ defmodule Pty.Session do
   window does — SIGHUP, and a child still alive 2 s later gets SIGTERM, then
   SIGKILL 1 s after, both to its process group — relays what it prints on the
   way out, and returns once it is gone. Its id is free from the first instant,
-  so an `ensure/2` mid-hangup starts a fresh session. Either way every
+  so an `ensure/2` mid-hangup starts a fresh session, while a `kill/1` by id
+  meanwhile reaps that fresh one, or else waits the dying one out. Either way every
   subscriber receives `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap —
   unless the session is killed outright (`:kill`, or the supervisor's brutal
   kill past its shutdown timeout), which skips `terminate/2`; monitor it.
@@ -132,15 +133,25 @@ defmodule Pty.Session do
   @doc "Metadata for every live session, oldest first."
   def list do
     # By the monotonic stamp each session registers under: `started` is wall
-    # seconds, which ties within one and can step back.
+    # seconds, which ties within one and can step back. A binary key only: a
+    # dying session's {:reaping, …} key is no live session.
     @registry
-    |> Registry.select([{{:_, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
+    |> Registry.select([{{:"$3", :"$1", :"$2"}, [{:is_binary, :"$3"}], [{{:"$2", :"$1"}}]}])
     |> Enum.sort()
     |> Enum.flat_map(&List.wrap(info(elem(&1, 1))))
   end
 
   @doc "Reap one session by id or pid; returns once its child is gone, or `{:error, :not_found}`."
-  def kill(id) when is_binary(id), do: kill({:via, Registry, {@registry, id}})
+  def kill(id) when is_binary(id) do
+    # An id a reap has already freed still names its dying session until gone:
+    # terminate/2 holds {:reaping, id, pid} before it lets go of the id itself.
+    with {:error, :not_found} <- kill({:via, Registry, {@registry, id}}) do
+      case Registry.select(@registry, [{{{:reaping, id, :_}, :"$1", :_}, [], [:"$1"]}]) do
+        [] -> {:error, :not_found}
+        dying -> Enum.each(dying, &kill/1)
+      end
+    end
+  end
 
   # Stopped directly, not through the supervisor, which would block every
   # ensure/2 behind a hangup. Any exit — gone already, or ended mid-stop — is
@@ -384,9 +395,11 @@ defmodule Pty.Session do
   # (port_closed at worst). A reap reports 129 — 128 + SIGHUP, as a shell
   # reports a hung-up child — whatever erlexec says: it overrides the status of
   # any child it stopped with 0. The id is freed first, so a start/2 during a
-  # slow hangup gets a fresh session, not this dying one.
+  # slow hangup gets a fresh session, not this dying one; the reaping key, taken
+  # before the id is let go, keeps it findable for a kill/1 by id meanwhile.
   @impl true
   def terminate(_reason, state) do
+    Registry.register(@registry, {:reaping, state.id, self()}, nil)
     Registry.unregister(@registry, state.id)
 
     code =
