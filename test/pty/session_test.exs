@@ -201,6 +201,20 @@ defmodule Pty.SessionTest do
       poll_until(fn -> not alive?(String.to_integer(bg)) end)
     end
 
+    test "a kill by id during another reap's hangup returns once the child is gone" do
+      pid =
+        start_sh_session(args: ["-c", "trap '' HUP TERM; echo up; while :; do sleep 0.1; done"])
+
+      recv_until_marker("up")
+      %{id: id, os_pid: os_pid} = :sys.get_state(pid)
+
+      reap = Task.async(fn -> Session.kill(pid) end)
+      poll_until(fn -> Session.whereis(id) == :error end)
+      assert Session.kill(id) == :ok
+      refute alive?(os_pid)
+      assert Task.await(reap) == :ok
+    end
+
     test "a crashed session still tells subscribers and takes its child along" do
       {_id, pid} = ready(start_session())
       os_pid = :sys.get_state(pid).os_pid
