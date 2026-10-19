@@ -35,14 +35,15 @@ defmodule Pty.MixProject do
   end
 
   # plug + websock_adapter carry `Pty.Plug`'s upgrade; websock is the
-  # behaviour `Pty.Socket` implements. No web server: the host brings one.
+  # behaviour `Pty.Socket` implements (0.5.5 added the UpgradeValidation
+  # `Pty.Plug` calls). No web server: the host brings one.
   defp deps do
     [
       {:erlexec, "~> 2.3"},
       {:jason, "~> 1.4"},
       {:plug, "~> 1.16"},
       {:websock, "~> 0.5"},
-      {:websock_adapter, "~> 0.5"}
+      {:websock_adapter, "~> 0.5.5 or ~> 0.6"}
     ]
   end
 
