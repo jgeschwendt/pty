@@ -11,7 +11,7 @@ defmodule Pty do
       {:ok, session} = Pty.start(Pty.new_id(), command: "claude")
       {:ok, scrollback} = Pty.attach(session)
       Pty.write(session, "ls\\n")
-      # receive {:pty_data, bytes} … {:pty_exit, code}
+      # receive {:pty_data, bytes} … {:pty_exit, code}, or {:pty_lagged}: reattach
 
   This module is the whole public API. `Pty.Session` is the process,
   `Pty.Client` the transport contract, `Pty.Socket` a ready WebSock
@@ -72,7 +72,9 @@ defmodule Pty do
 
   Returns the scrollback buffer to replay before the feed. The subscriber then
   receives `{:pty_data, binary}` and, once, `{:pty_exit, code}` — unless the
-  session is killed outright; monitor it to cover that.
+  session is killed outright; monitor it to cover that. A subscriber more than
+  `:max_lag` messages behind instead receives one `{:pty_lagged}` and is
+  dropped; it reattaches to resume from the scrollback.
   """
   @spec attach(session, pid) :: {:ok, binary} | {:error, :not_found}
   def attach(session, subscriber \\ self()) do

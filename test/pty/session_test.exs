@@ -101,6 +101,47 @@ defmodule Pty.SessionTest do
       assert recv_until_marker(live) =~ live
       assert Task.await(task) =~ live
     end
+
+    test "one past :max_lag is dropped with a single {:pty_lagged}, bounded; a reattach resumes; the rest never lag" do
+      pid =
+        start_sh_session(
+          args: ["-c", "for i in $(seq 20); do echo $i; sleep 0.01; done; echo done; exec cat"],
+          max_lag: 3
+        )
+
+      task = Task.async(fn -> recv_until_marker("done") end)
+      {:ok, _} = Session.attach(pid, task.pid)
+      assert Task.await(task) =~ "done"
+      poll_until(fn -> Session.info(pid).subscribers == 0 end)
+
+      # The stalled mailbox stops at max_lag + 1 chunks and the one notice.
+      for _ <- 0..3, do: assert_received({:pty_data, _})
+      assert_received {:pty_lagged}
+      refute_received _
+
+      {:ok, _} = Session.attach(pid, self())
+      Session.input(pid, "back\n")
+      recv_until_marker("back")
+    end
+
+    test "only a live local subscriber is measured: a dead or remote one is sent to as before" do
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, _, _, _}
+      # Process.info/2 raises on a pid of another node.
+      remote =
+        self()
+        |> :erlang.term_to_binary()
+        |> String.replace("#{node()}", "remote@nohost")
+        |> :erlang.binary_to_term()
+
+      subs = Map.new([self(), dead, remote], &{&1, make_ref()})
+      state = %{os_pid: 1, subs: subs, buffer: :queue.new(), buffer_bytes: 0, cap: 0, max_lag: -1}
+
+      assert {:noreply, %{subs: kept}} = Session.handle_info({:stdout, 1, "x"}, state)
+      assert kept == Map.delete(subs, self())
+      assert_received {:pty_lagged}
+    end
   end
 
   describe "spawn env" do

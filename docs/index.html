@@ -91,7 +91,8 @@
     <li><strong>every end reaches subscribers as one <code class="code">{:pty_exit, code}</code></strong>
       — <code class="code">129</code> for a reap or crash — except an untrappable kill, which skips
       <code class="code">terminate/2</code>; <code class="code">Pty.Socket</code> monitors the session
-      for that. A reap SIGHUPs, relays the child's last output, and after 2 s lets erlexec stop it
+      for that. A subscriber dropped for lag (over <code class="code">:max_lag</code> messages behind)
+      gets one <code class="code">{:pty_lagged}</code> instead, and hears no end unless it reattaches. A reap SIGHUPs, relays the child's last output, and after 2 s lets erlexec stop it
       (SIGTERM, then SIGKILL 1 s on, to the process group). A session's death, however abrupt, takes
       its child through the erlexec link.</li>
     <li><strong>reaps never go through the supervisor</strong> — <code class="code">GenServer.stop</code>,
@@ -138,6 +139,7 @@
         <tr data-code="4404"><td class="table-mono">4404</td><td>a reattach found no session, or the one found ended as it attached</td><td>stop · <code class="code">onExit</code></td></tr>
         <tr data-code="4422"><td class="table-mono">4422</td><td>an invalid id, reattaching or not, or a refused spawn — <code class="code">:command</code> or <code class="code">:cwd</code> not found, or erlexec rejected an option such as a bad <code class="code">:cols</code>; permanent</td><td>stop · <code class="code">onExit</code></td></tr>
         <tr data-code="1011"><td class="table-mono">1011</td><td>any other start failure — pty cannot tell a passing failure (resources) from a fault (an option that crashes init); the host's logs show which</td><td>reconnect</td></tr>
+        <tr data-code="1013"><td class="table-mono">1013</td><td>a subscriber fell more than <code class="code">:max_lag</code> messages behind and was dropped</td><td>reconnect · reattach, resync from scrollback</td></tr>
         <tr data-code="1000"><td class="table-mono">1000</td><td>never the session's: Bandit sends it on its own shutdown</td><td>reconnect</td></tr>
         <tr data-code="other"><td class="table-mono">other</td><td>transport loss, or an upgrade <code class="code">Pty.Plug</code> refused (<code class="code">400</code> bad id, <code class="code">403</code> origin) — backed off, since the backoff resets only on attach</td><td>reconnect, 1 s → 15 s</td></tr>
       </tbody>
@@ -172,10 +174,11 @@
       hangup is sent by <code class="code">:exec.kill/2</code>.</li>
     <li><strong><code class="code">Origin</code> is compared with <code class="code">Host</code></strong>,
       so DNS rebinding is outside the check.</li>
-    <li><strong>Output and input are unbounded</strong> — <code class="code">broadcast/2</code> sends
-      every chunk to every subscriber, so a slow browser grows the host VM by the child's whole output
-      (64 MB queued in 2.5 s with zero reads), and exec-port queues browser input without limit.
-      Proposal <code class="code">proposal:jgeschwendt/pty:backpressure</code> awaits the owner.</li>
+    <li><strong>Input is unbounded</strong> — exec-port queues browser input without limit. Output is
+      bounded per subscriber: one more than <code class="code">:max_lag</code> (1 000) messages behind
+      is dropped with a single <code class="code">{:pty_lagged}</code> (the tmux resync model), where
+      unbounded it grew the host VM by the child's whole output (64 MB in 2.5 s with zero reads). Only
+      the live feed checks; the exit path is bounded by the 3 s hangup ladder.</li>
     <li><strong>An outright kill reaches only the child's process group</strong> — a job an
       interactive shell put in its own group (<code class="code">sleep 100000 &amp;</code>) outlives a
       <code class="code">:kill</code> or a brutal supervisor kill; a reap's hangup reaches it through the shell.</li>

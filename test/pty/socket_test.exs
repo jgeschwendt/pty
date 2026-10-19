@@ -15,6 +15,7 @@ defmodule Pty.SocketTest do
   @resize_rows 30
   @ws_close_ended 4000
   @ws_close_internal_error 1011
+  @ws_close_lagged 1013
   @ws_close_refused 4422
 
   setup do
@@ -175,6 +176,13 @@ defmodule Pty.SocketTest do
                Socket.handle_info({:pty_exit, 0}, state)
 
       assert is_binary(reason)
+    end
+
+    test "a lagged subscriber closes 1013: the client reattaches and resyncs from the scrollback" do
+      state = %{session: self()}
+
+      assert {:stop, :normal, {@ws_close_lagged, "lagged"}, ^state} =
+               Socket.handle_info({:pty_lagged}, state)
     end
 
     test "a session that dies without a word closes the socket" do

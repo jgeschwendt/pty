@@ -41,6 +41,9 @@ defmodule Pty.Socket do
     * close `1011`: any other start failure. Retried: pty cannot tell a passing
       failure (resources) from a fault (an option that crashes init); the
       host's logs show which.
+    * close `1013`: this subscriber fell over `:max_lag` messages behind and
+      was dropped (see `Pty.Session`). Retried: the client reattaches and gets
+      the scrollback.
 
   The browser half lives in `priv/static/pty.js`.
   """
@@ -53,6 +56,7 @@ defmodule Pty.Socket do
 
   @ws_close_ended 4000
   @ws_close_internal_error 1011
+  @ws_close_lagged 1013
   @ws_close_not_found 4404
   @ws_close_refused 4422
 
@@ -113,6 +117,10 @@ defmodule Pty.Socket do
 
   def handle_info({:pty_exit, code}, state) do
     {:stop, :normal, {@ws_close_ended, "process exited (#{code})"}, state}
+  end
+
+  def handle_info({:pty_lagged}, state) do
+    {:stop, :normal, {@ws_close_lagged, "lagged"}, state}
   end
 
   def handle_info({:DOWN, _ref, :process, session, _reason}, %{session: session} = state) do
