@@ -123,10 +123,12 @@ defmodule Pty.Session do
 
   @doc "Metadata for every live session, oldest first."
   def list do
+    # By the monotonic stamp each session registers under: `started` is wall
+    # seconds, which ties within one and can step back.
     @registry
-    |> Registry.select([{{:_, :"$1", :_}, [], [:"$1"]}])
-    |> Enum.flat_map(&List.wrap(info(&1)))
-    |> Enum.sort_by(& &1.started)
+    |> Registry.select([{{:_, :"$1", :"$2"}, [], [{{:"$2", :"$1"}}]}])
+    |> Enum.sort()
+    |> Enum.flat_map(&List.wrap(info(elem(&1, 1))))
   end
 
   @doc "Reap one session by id or pid; returns once its child is gone, or `{:error, :not_found}`."
@@ -162,7 +164,8 @@ defmodule Pty.Session do
   ## Process wiring
 
   def start_link({id, opts}) do
-    GenServer.start_link(__MODULE__, {id, opts}, name: {:via, Registry, {@registry, id}})
+    stamp = System.unique_integer([:monotonic])
+    GenServer.start_link(__MODULE__, {id, opts}, name: {:via, Registry, {@registry, id, stamp}})
   end
 
   ## Server

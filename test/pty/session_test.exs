@@ -115,13 +115,17 @@ defmodule Pty.SessionTest do
     end
   end
 
-  test "list/0 + resize/3 report the documented keys and default dims, then the resized dims" do
+  test "list/0 + resize/3 report the documented keys and default dims, oldest first, then the resized dims" do
     {id, pid} = start_session()
     assert %{id: ^id, cols: 80, rows: 24} = s = find_session(id)
     assert is_integer(s.started)
 
     assert Enum.sort(Map.keys(s)) ==
              [:buffer_bytes, :cols, :command, :id, :rows, :started, :subscribers]
+
+    # All within one `started` second: the order is the start order, not ETS's.
+    ids = [id | for(_ <- 1..9, do: elem(start_session(), 0))]
+    assert ids == for(%{id: i} <- Session.list(), i in ids, do: i)
 
     # Casts then a call from one process arrive in order: no polling.
     Session.resize(pid, 80, 24)
