@@ -28,7 +28,7 @@ defmodule Pty.Plug do
       `reattach` parameter (any value), which `pty.js` sends on every reconnect,
       makes the connection attach-only (see `Pty.Socket`).
     * `:ping_interval` — milliseconds between the WebSocket pings `Pty.Socket`
-      sends (default `30_000`; see its init argument).
+      sends, a positive integer (default `30_000`; see its init argument).
     * `:session_opts` — spawn options (see `Pty.Session`) for a session this
       connection starts. May be a keyword list, or a 1-arity function of the
       `conn` for per-request values (a cwd from the path, say).
@@ -49,13 +49,16 @@ defmodule Pty.Plug do
 
   @impl Plug
   def init(opts) do
-    case Keyword.get(opts, :check_origin, true) do
-      check when is_boolean(check) or is_list(check) ->
-        opts
+    check = Keyword.get(opts, :check_origin, true)
+    ping = Keyword.get(opts, :ping_interval, 30_000)
 
-      other ->
-        raise ArgumentError, ":check_origin must be a boolean or a list, got #{inspect(other)}"
-    end
+    is_boolean(check) or is_list(check) or
+      raise ArgumentError, ":check_origin must be a boolean or a list, got #{inspect(check)}"
+
+    (is_integer(ping) and ping > 0) or
+      raise ArgumentError, ":ping_interval must be a positive integer, got #{inspect(ping)}"
+
+    opts
   end
 
   @impl Plug
