@@ -27,11 +27,16 @@ defmodule Pty.Plug do
     * `:param` — query parameter carrying the session id (default `"s"`). A
       `reattach` parameter (any value), which `pty.js` sends on every reconnect,
       makes the connection attach-only (see `Pty.Socket`).
+    * `:ping_interval` — milliseconds between the WebSocket pings `Pty.Socket`
+      sends (default `30_000`; see its init argument).
     * `:session_opts` — spawn options (see `Pty.Session`) for a session this
       connection starts. May be a keyword list, or a 1-arity function of the
       `conn` for per-request values (a cwd from the path, say).
-    * `:timeout` — WebSocket idle timeout, default `:infinity` (a terminal is
-      idle whenever its human is thinking).
+    * `:timeout` — WebSocket idle timeout, default `90_000` ms; keep it above
+      `:ping_interval`. A terminal is idle whenever its human is thinking, so
+      idleness alone never closes it: the browser answers every ping by
+      itself, and only a client that stopped answering — gone without a FIN
+      (lid shut, network dropped) — times out, freeing its subscription.
   """
 
   @behaviour Plug
@@ -76,14 +81,15 @@ defmodule Pty.Plug do
   end
 
   defp upgrade(conn, id, opts) do
-    arg = %{
-      session_id: id,
-      session_opts: session_opts(conn, opts),
-      reattach: Map.has_key?(conn.query_params, "reattach")
-    }
+    arg =
+      Map.merge(Map.new(Keyword.take(opts, [:ping_interval])), %{
+        session_id: id,
+        session_opts: session_opts(conn, opts),
+        reattach: Map.has_key?(conn.query_params, "reattach")
+      })
 
     conn
-    |> WebSockAdapter.upgrade(Pty.Socket, arg, timeout: Keyword.get(opts, :timeout, :infinity))
+    |> WebSockAdapter.upgrade(Pty.Socket, arg, timeout: Keyword.get(opts, :timeout, 90_000))
     |> halt()
   end
 

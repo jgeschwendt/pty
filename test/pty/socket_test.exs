@@ -185,6 +185,14 @@ defmodule Pty.SocketTest do
                Socket.handle_info(down, state)
     end
 
+    test "a ping every :ping_interval: the client's pongs are what hold off the idle timeout" do
+      {:push, _, state} = Socket.init(%{session_id: fresh_id(), ping_interval: 10})
+
+      assert_receive :ping
+      assert {:push, {:ping, ""}, ^state} = Socket.handle_info(:ping, state)
+      assert_receive :ping
+    end
+
     test "unrelated messages are ignored" do
       state = %{session: self()}
       assert {:ok, ^state} = Socket.handle_info(:whatever, state)

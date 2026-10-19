@@ -43,10 +43,13 @@ defmodule Pty.PlugTest do
   end
 
   test "an upgrade request is handed to Pty.Socket, reattach flag and all" do
-    # :session_opts as a list, or a 1-arity fun resolved against the conn before the hand-off.
-    for {query, reattach, session_opts} <- [
-          {"s=abc", false, [cwd: "abc"]},
-          {"s=abc&reattach=1", true, &[cwd: &1.query_params["s"]]}
+    # :session_opts as a list, or a 1-arity fun resolved against the conn before
+    # the hand-off; a finite idle timeout by default, above the ping interval.
+    for {query, reattach, opts, extra, timeout} <- [
+          {"s=abc", false, [session_opts: [cwd: "abc"]], %{}, 90_000},
+          {"s=abc&reattach=1", true,
+           [session_opts: &[cwd: &1.query_params["s"]], ping_interval: 5, timeout: 20],
+           %{ping_interval: 5}, 20}
         ] do
       conn =
         conn(:get, "/pty?" <> query)
@@ -57,10 +60,17 @@ defmodule Pty.PlugTest do
           {"sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="},
           {"sec-websocket-version", "13"}
         ])
-        |> Pty.Plug.call(Pty.Plug.init(session_opts: session_opts))
+        |> Pty.Plug.call(Pty.Plug.init(opts))
 
-      assert [{:websocket, {Pty.Socket, arg, _}}] = Plug.Test.sent_upgrades(conn)
-      assert arg == %{session_id: "abc", session_opts: [cwd: "abc"], reattach: reattach}
+      assert [{:websocket, {Pty.Socket, arg, upgrade_opts}}] = Plug.Test.sent_upgrades(conn)
+      assert upgrade_opts[:timeout] == timeout
+
+      assert arg ==
+               Map.merge(extra, %{
+                 session_id: "abc",
+                 session_opts: [cwd: "abc"],
+                 reattach: reattach
+               })
     end
   end
 
