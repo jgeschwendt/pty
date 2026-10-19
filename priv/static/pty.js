@@ -39,10 +39,11 @@
     scrollback: 5000,
   };
 
-  // "/pty?s=x" → "ws://host/pty?s=x"; an absolute ws(s):// url passes through
-  // without touching `location`. A URL object, so a reconnect can add ?reattach.
+  // "/pty?s=x" → "ws://host/pty?s=x", http(s) → ws(s); an absolute ws(s):// url,
+  // in any case, passes through without touching `location`. A URL object, so
+  // a reconnect can add ?reattach.
   function socketUrl(url) {
-    if (/^wss?:/.test(url)) return new URL(url);
+    if (/^wss?:/i.test(url)) return new URL(url);
     var resolved = new URL(url, location.href);
     resolved.protocol = resolved.protocol === "https:" ? "wss:" : "ws:";
     return resolved;
