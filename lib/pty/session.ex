@@ -100,8 +100,10 @@ defmodule Pty.Session do
     end
   end
 
+  # A pid only: a name's DOWN carries {name, node}, never matching its key.
   @doc "Subscribe `subscriber` to the live feed; returns the replay buffer."
-  def attach(pid, subscriber), do: GenServer.call(pid, {:attach, subscriber})
+  def attach(pid, subscriber) when is_pid(subscriber),
+    do: GenServer.call(pid, {:attach, subscriber})
 
   @doc """
   Unsubscribe `subscriber` from the live feed. The PTY keeps running.
@@ -274,11 +276,10 @@ defmodule Pty.Session do
     {:reply, Map.put(info, :subscribers, map_size(state.subs)), state}
   end
 
+  # A re-attach keeps its monitor: one per subscriber, however often it asks.
   def handle_call({:attach, sub}, _from, state) do
-    ref = Process.monitor(sub)
-
     {:reply, {:ok, state.buffer |> :queue.to_list() |> IO.iodata_to_binary()},
-     put_in(state.subs[sub], ref)}
+     update_in(state.subs, &Map.put_new_lazy(&1, sub, fn -> Process.monitor(sub) end))}
   end
 
   @impl true

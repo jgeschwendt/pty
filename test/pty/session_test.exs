@@ -56,10 +56,14 @@ defmodule Pty.SessionTest do
   end
 
   describe "subscribers" do
-    test "a stray detach and a stray message are harmless; a dead subscriber is dropped" do
+    test "a re-attach keeps one monitor, a name is refused, strays are harmless, the dead dropped" do
       {_id, pid} = start_session()
       sub = spawn(fn -> Process.sleep(:infinity) end)
       {:ok, _} = Session.attach(pid, sub)
+      {:ok, _} = Session.attach(pid, sub)
+      assert Process.info(pid, :monitors) == {:monitors, [process: sub]}
+      # apply/3: the call is ill-typed on purpose, which the compiler would flag.
+      assert_raise FunctionClauseError, fn -> apply(Session, :attach, [pid, :a_name]) end
 
       Session.detach(pid, self())
       send(pid, :stray)
