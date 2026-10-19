@@ -194,15 +194,18 @@ defmodule Pty.SocketTest do
       assert {:push, {:ping, ""}, ^state} = Socket.handle_info(:ping, state)
       assert_receive :ping
 
-      # A bad interval on a direct mount fails before any session is spawned.
-      id = fresh_id()
+      # A bad interval on a direct mount fails before any session is spawned;
+      # 0 too, which :timer would take and flood the socket with pings.
+      for bad <- [0, nil] do
+        id = fresh_id()
 
-      {result, log} =
-        ExUnit.CaptureLog.with_log(fn -> Socket.init(%{session_id: id, ping_interval: nil}) end)
+        {result, log} =
+          ExUnit.CaptureLog.with_log(fn -> Socket.init(%{session_id: id, ping_interval: bad}) end)
 
-      assert {:stop, :normal, {@ws_close_internal_error, _}, %{session: nil}} = result
-      assert log =~ "{:error, :badarg}"
-      assert Pty.lookup(id) == :error
+        assert {:stop, :normal, {@ws_close_internal_error, _}, %{session: nil}} = result
+        assert log =~ "{:error, {:invalid_ping_interval, #{inspect(bad)}}}"
+        assert Pty.lookup(id) == :error
+      end
     end
 
     test "unrelated messages are ignored" do
