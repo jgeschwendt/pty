@@ -107,5 +107,11 @@ defmodule Pty.PlugTest do
     assert_raise ArgumentError, fn -> Pty.Plug.init(check_origin: nil) end
   end
 
+  test "a :ping_interval that is no positive integer raises at init" do
+    for bad <- [nil, 0, -1, 1.5] do
+      assert_raise ArgumentError, fn -> Pty.Plug.init(ping_interval: bad) end
+    end
+  end
+
   defp call(conn), do: Pty.Plug.call(conn, @opts)
 end
