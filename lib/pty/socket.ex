@@ -30,8 +30,9 @@ defmodule Pty.Socket do
       client must take as transport loss, not as the end.
     * close `4404`: no session to attach — a reattach found none, or the one
       found ended as it attached.
-    * close `4422`: the spawn was refused — `:command` or `:cwd` not found, or
-      erlexec rejected an option (e.g. a bad `:cols`). Permanent.
+    * close `4422`: the spawn was refused — an id `Pty.valid_id?/1` rejects,
+      `:command` or `:cwd` not found, or erlexec rejected an option (e.g. a
+      bad `:cols`). Permanent.
     * close `1011`: any other start failure. Retried: pty cannot tell a passing
       failure (resources) from a fault (an option that crashes init); the
       host's logs show which.
@@ -63,6 +64,9 @@ defmodule Pty.Socket do
 
       # Only the deterministic refusals; a fixed reason fits RFC 6455's 123
       # bytes and leaks no host config.
+      {:error, :invalid_id} ->
+        close(@ws_close_refused, "invalid session id")
+
       {:error, {:spawn_failed, reason}}
       when reason == :enoent or elem(reason, 0) == :invalid_option ->
         close(@ws_close_refused, "spawn refused")

@@ -64,21 +64,30 @@ defmodule Pty.Session do
   # @kill_timeout_s. Both stay under the supervisor's 5 s shutdown.
   @hangup_grace_ms 2_000
   @kill_timeout_s 1
+  # URL-safe base64 alphabet, capped: an id reaches logs and admin surfaces, so
+  # control/ANSI characters and unbounded length are rejected at the door.
+  @session_id ~r/\A[\w-]{1,64}\z/
 
   ## Client API
 
   @doc "A fresh, URL-safe session id."
   def new_id, do: 9 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
+  @doc "True when `id` is well-formed enough to route on (see `new_id/0`)."
+  def valid_id?(id), do: is_binary(id) and id =~ @session_id
+
   @doc """
   Return the running session for `id`, starting it if needed.
 
   `opts` configure the spawn (see the module doc) and apply only when the
-  session is actually started — an already-live id is returned untouched.
+  session is actually started — an already-live id is returned untouched. An
+  id `valid_id?/1` refuses is `{:error, :invalid_id}`, before it can reach the
+  registry or a log.
   """
   def ensure(id, opts \\ []) do
     # The via-name registers before init/1 runs, so a live id never spawns.
-    with {:error, {:already_started, pid}} <-
+    with true <- valid_id?(id) || {:error, :invalid_id},
+         {:error, {:already_started, pid}} <-
            DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, opts}}),
          do: {:ok, pid}
   end
