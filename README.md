@@ -121,7 +121,9 @@ term.dispose();  // unmount: detaches the client, the PTY keeps running
 ```
 
 `Terminal` is the only required piece; each addon is used if present
-(`ClipboardAddon` is what makes OSC 52 clipboard writes work). It reconnects
+(`ClipboardAddon` is what makes OSC 52 clipboard writes work; OSC 52 *reads*
+are swallowed, since the reply would hand the viewer's clipboard to the shell
+and so to everyone attached to the session). It reconnects
 with exponential backoff on transport loss — reset only once a socket is
 attached, so a refused upgrade backs off instead of hammering — and every
 reconnect is attach-only: a session that ended while the client was away

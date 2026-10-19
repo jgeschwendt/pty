@@ -26,6 +26,8 @@ class Terminal {
   cols = 80;
   log = [];
   on = {};
+  osc = [];
+  parser = { registerOscHandler: (_id, fn) => this.osc.push(fn) };
   rows = 24;
   unicode = {};
   constructor(settings) {
@@ -34,6 +36,7 @@ class Terminal {
       this[name] = (fn) => ((this.on[name] = fn), { dispose: () => delete this.on[name] });
     for (const name of ["dispose", "loadAddon", "open", "reset", "write"])
       this[name] = (arg) => this.log.push(arg === undefined ? name : [name, arg]);
+    this.loadAddon = (addon) => (this.log.push(["loadAddon", addon]), addon.activate?.(this));
   }
 }
 
@@ -194,6 +197,18 @@ test("mount builds, fits, observes and loads every addon handed in", () => {
   expect(observers[0].disconnected).toBe(true);
   expect(last().closed).toBe(true);
   expect(term.log.at(-1)).toBe("dispose");
+});
+
+test("OSC 52: writes reach the ClipboardAddon, reads never do", () => {
+  const seen = [];
+  const ClipboardAddon = class {
+    activate(term) {
+      term.parser.registerOscHandler(52, (data) => seen.push(data) > 0);
+    }
+  };
+  const { term } = Pty.mount({}, "/pty", { xterm: { ClipboardAddon, Terminal } });
+  for (const data of ["c;aGk=", "c;?", "p;?"]) term.osc.findLast((handler) => handler(data));
+  expect(seen).toEqual(["c;aGk="]);
 });
 
 test("mount degrades: no addons, a WebGL that throws, no ResizeObserver", () => {
