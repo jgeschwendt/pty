@@ -12,7 +12,7 @@ defmodule Pty.Plug do
   (and **authentication** — a session is a shell running as your user) is the
   host's job. It responds `400` for a missing or malformed session id, `403`
   for a browser `Origin` that `:check_origin` refuses, `426` when the request
-  is not a WebSocket upgrade, and otherwise hands off to `Pty.Socket`.
+  is not a valid WebSocket upgrade (RFC 6455), and otherwise hands off to `Pty.Socket`.
 
   ## Options
 
@@ -65,7 +65,9 @@ defmodule Pty.Plug do
       not origin?(conn, Keyword.get(opts, :check_origin, true)) ->
         send_resp(conn, @status_forbidden, "origin not allowed")
 
-      not upgrade?(conn) ->
+      # RFC 6455 checked here, not left to WebSockAdapter.upgrade/4, whose
+      # raise would be a 500 and a stack trace per bad request.
+      WebSockAdapter.UpgradeValidation.validate_upgrade(conn) != :ok ->
         send_resp(conn, @status_upgrade_required, "expected websocket upgrade")
 
       true ->
@@ -100,9 +102,5 @@ defmodule Pty.Plug do
         do: origin in check,
         else: !check or URI.parse(origin).host == URI.parse("//" <> conn.host).host
     end)
-  end
-
-  defp upgrade?(conn) do
-    conn |> get_req_header("upgrade") |> Enum.any?(&(String.downcase(&1) =~ "websocket"))
   end
 end
