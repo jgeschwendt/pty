@@ -9,8 +9,8 @@
 //   Pty.connect(existingTerminal, "/pty?s=" + id)
 //
 // Server → client frames are binary PTY output, written straight through; the
-// first is the scrollback, and marks the socket attached. Every reconnect asks
-// with ?reattach, so a session that ended while away closes 4404 instead of
+// first is the scrollback, and marks the socket attached. Every reconnect after
+// the first attach asks with ?reattach, so a session that ended while away closes 4404 instead of
 // being silently respawned under the old id; a refused spawn closes 4422.
 // Client → server frames are JSON: {t:"i",d} for input, {t:"b",d} for raw
 // bytes (one per char 0–255), {t:"r",cols,rows} for resize. OSC 0/2 (title) surfaces as the onTitle callback rather than a

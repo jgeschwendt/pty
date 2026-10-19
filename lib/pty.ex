@@ -17,9 +17,9 @@ defmodule Pty do
   `Pty.Client` the transport contract, `Pty.Socket` a ready WebSock
   handler, and `Pty.Plug` mounts that handler on a host's endpoint.
 
-  Every function takes a session as either its **id** (a binary) or its **pid**.
-  An id that names no live session yields `{:error, :not_found}` — only
-  `start/2` creates.
+  Every function that takes a session takes its **id** (a binary) or its
+  **pid**. An id that names no live session yields `{:error, :not_found}`
+  (`nil` from `info/1`) — only `start/2` creates.
   """
 
   alias Pty.Session
