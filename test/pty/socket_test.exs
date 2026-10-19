@@ -56,7 +56,7 @@ defmodule Pty.SocketTest do
       assert String.contains?(buffer, marker)
     end
 
-    test "a refused spawn closes 4422 — permanent, the client stops" do
+    test "a refused spawn or id closes 4422 — permanent, the client stops" do
       # A missing binary (:enoent), and an option erlexec rejects (:invalid_option).
       for opts <- [[command: "/nonexistent/definitely-not-a-binary"], [cols: "x"]] do
         {result, _log} =
@@ -66,6 +66,10 @@ defmodule Pty.SocketTest do
 
         assert {:stop, :normal, {@ws_close_refused, "spawn refused"}, %{session: nil}} = result
       end
+
+      # A directly-mounted socket has no Pty.Plug in front to 400 a bad id.
+      assert {:stop, :normal, {@ws_close_refused, "invalid session id"}, %{session: nil}} =
+               Socket.init(%{session_id: "nl\n"})
     end
 
     test "any other start failure closes 1011 and the client retries" do

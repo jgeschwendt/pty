@@ -24,10 +24,6 @@ defmodule Pty do
 
   alias Pty.Session
 
-  # URL-safe base64 alphabet, capped: an id reaches logs and admin surfaces, so
-  # control/ANSI characters and unbounded length are rejected at the door.
-  @session_id ~r/\A[\w-]{1,64}\z/
-
   @type session :: pid | binary
   @type info :: %{
           id: binary,
@@ -55,14 +51,14 @@ defmodule Pty do
 
   @doc "True when `id` is well-formed enough to route on (see `new_id/0`)."
   @spec valid_id?(term) :: boolean
-  def valid_id?(id) when is_binary(id), do: id =~ @session_id
-  def valid_id?(_id), do: false
+  defdelegate valid_id?(id), to: Session
 
   @doc """
   Start the session for `id`, or return the one already running.
 
   Idempotent: `opts` (see `Pty.Session`) configure the spawn and are ignored
-  when the id is already live, which is what makes reattach-by-id work.
+  when the id is already live, which is what makes reattach-by-id work. An id
+  `valid_id?/1` refuses is `{:error, :invalid_id}`.
   """
   @spec start(binary, keyword) :: {:ok, pid} | {:error, term}
   defdelegate start(id, opts \\ []), to: Session, as: :ensure

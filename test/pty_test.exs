@@ -37,6 +37,8 @@ defmodule PtyTest do
       {:ok, pid} = Pty.lookup(id)
       assert {:ok, ^pid} = Pty.start(id)
       assert Pty.lookup("nope") == :error
+      # Refused before it can reach the registry or a log line.
+      assert Pty.start("nl\n") == {:error, :invalid_id}
     end
 
     test "spawn options beat the environment" do
