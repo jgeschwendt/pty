@@ -112,11 +112,14 @@ defmodule Pty.Session do
   """
   def detach(pid, subscriber), do: GenServer.cast(pid, {:detach, subscriber})
 
+  # Guarded as erlexec's send/winsz are: an ill-typed cast would crash the
+  # session, and with it every client's shell, while the caller got :ok.
   @doc "Write `data` to the PTY's stdin."
-  def input(pid, data), do: GenServer.cast(pid, {:input, data})
+  def input(pid, data) when is_binary(data), do: GenServer.cast(pid, {:input, data})
 
   @doc "Resize the PTY to `cols` x `rows`."
-  def resize(pid, cols, rows), do: GenServer.cast(pid, {:resize, cols, rows})
+  def resize(pid, cols, rows) when is_integer(cols) and is_integer(rows),
+    do: GenServer.cast(pid, {:resize, cols, rows})
 
   @doc "Metadata for every live session, oldest first."
   def list do
