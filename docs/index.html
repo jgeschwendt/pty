@@ -120,7 +120,8 @@
   <header>
     <h2 class="h2">Close codes</h2>
     <p class="docs-note">The client sends JSON text frames (<code class="code">{"t":"i","d":…}</code>
-      input, <code class="code">{"t":"r","cols":C,"rows":R}</code> resize); the server sends raw output
+      input, <code class="code">{"t":"b","d":…}</code> raw bytes, one per code point 0–255,
+      <code class="code">{"t":"r","cols":C,"rows":R}</code> resize); the server sends raw output
       as binary frames, the scrollback first. Three private close codes are final, and
       <code class="code">pty.js</code> stops on exactly those.</p>
   </header>

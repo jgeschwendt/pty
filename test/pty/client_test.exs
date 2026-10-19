@@ -14,15 +14,28 @@ defmodule Pty.ClientTest do
   @oversize_dim 2_000
 
   describe "decode/1" do
-    test "decodes input and resize frames" do
+    test "decodes input, binary input and resize frames" do
       assert Client.decode(~s|{"t":"i","d":"ls\\n"}|) == {:input, "ls\n"}
+      # An X10 mouse press at column 223, row 96: each code point is its byte.
+      assert Client.decode(~s|{"t":"b","d":"\\u001b[M \\u00ff\\u0080"}|) ==
+               {:input, <<27, "[M ", 255, 128>>}
 
       assert Client.decode(~s|{"t":"r","cols":#{@resize_cols},"rows":#{@resize_rows}}|) ==
                {:resize, @resize_cols, @resize_rows}
     end
 
     test "ignores malformed json, unknown types, and non-binary frames" do
-      for frame <- ["not json", ~s|{"t":"x"}|, ~s|{"t":"i","d":123}|, <<0, 1, 2>>, :nope] do
+      for frame <-
+            [
+              "not json",
+              ~s|{"t":"x"}|,
+              ~s|{"t":"i","d":123}|,
+              ~s|{"t":"b","d":123}|,
+              # U+0100 is no byte.
+              ~s|{"t":"b","d":"\\u0100"}|,
+              <<0, 1, 2>>,
+              :nope
+            ] do
         assert Client.decode(frame) == :ignore
       end
     end

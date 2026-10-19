@@ -12,8 +12,8 @@
 // first is the scrollback, and marks the socket attached. Every reconnect asks
 // with ?reattach, so a session that ended while away closes 4404 instead of
 // being silently respawned under the old id; a refused spawn closes 4422.
-// Client → server frames are JSON: {t:"i",d} for input, {t:"r",cols,rows} for
-// resize. OSC 0/2 (title) surfaces as the onTitle callback rather than a
+// Client → server frames are JSON: {t:"i",d} for input, {t:"b",d} for raw
+// bytes (one per char 0–255), {t:"r",cols,rows} for resize. OSC 0/2 (title) surfaces as the onTitle callback rather than a
 // document.title write — an embedded rail must not rename its host page. OSC 52
 // (clipboard) is xterm's ClipboardAddon, loaded only if the host passes it, and
 // write-only: a read would hand the viewer's clipboard to the shell.
@@ -119,6 +119,10 @@
     var listeners = [
       term.onData(function (data) {
         send({ t: "i", d: data });
+      }),
+      // X10-encoded mouse reports come only here: bytes, one per char.
+      term.onBinary(function (data) {
+        send({ t: "b", d: data });
       }),
       term.onResize(sendDims),
     ];

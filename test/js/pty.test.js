@@ -32,7 +32,7 @@ class Terminal {
   unicode = {};
   constructor(settings) {
     this.settings = settings;
-    for (const name of ["onData", "onResize", "onTitleChange"])
+    for (const name of ["onBinary", "onData", "onResize", "onTitleChange"])
       this[name] = (fn) => ((this.on[name] = fn), { dispose: () => delete this.on[name] });
     for (const name of ["dispose", "loadAddon", "open", "reset", "write"])
       this[name] = (arg) => this.log.push(arg === undefined ? name : [name, arg]);
@@ -113,17 +113,23 @@ test("input, resize and title travel; nothing is sent on a socket not open", () 
   const titles = [];
   const handle = Pty.connect(term, "/pty", { onTitle: (t) => titles.push(t) });
   term.on.onData("ls\r");
+  term.on.onBinary("\x1b[M \xff\x80");
   term.cols = 120;
   term.on.onResize();
   handle.send({ t: "x" });
   term.on.onTitleChange("vim");
   last().readyState = 3;
   term.on.onData("lost");
-  expect(last().sent).toEqual([{ t: "i", d: "ls\r" }, { t: "r", cols: 120, rows: 24 }, { t: "x" }]);
+  expect(last().sent).toEqual([
+    { t: "i", d: "ls\r" },
+    { t: "b", d: "\x1b[M \xff\x80" },
+    { t: "r", cols: 120, rows: 24 },
+    { t: "x" },
+  ]);
   expect(titles).toEqual(["vim"]);
   const untitled = new Terminal();
   Pty.connect(untitled, "/pty");
-  expect(Object.keys(untitled.on)).toEqual(["onData", "onResize"]);
+  expect(Object.keys(untitled.on)).toEqual(["onData", "onBinary", "onResize"]);
 });
 
 test("transport loss backs off 1 s → 15 s; an attach resets it and reattaches", () => {
