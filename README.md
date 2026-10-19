@@ -239,7 +239,11 @@ log or the registry, but an id is a name, not a credential.
 - **Sessions accumulate.** One per id you mint, alive until its child exits or
   you `reap/1` it. A host that mints an id per page load wants an idle sweep:
   `Pty.list/0` reports `subscribers` and `started` — reap what has had zero
-  subscribers for your TTL.
+  subscribers for your TTL. A client that vanished without closing (lid shut,
+  network dropped) leaves that count too: `Pty.Socket` pings every
+  `:ping_interval` (30 s), and `Pty.Plug`'s idle `:timeout` (90 s; keep it
+  above the interval) closes a socket that stops answering. A live browser
+  answers by itself, so a terminal whose human is only thinking stays open.
 - **Scrollback is raw bytes**: a bounded deque of output chunks (`:scrollback`,
   256 KB default, chunk-aligned; a single chunk over the cap keeps its tail).
   Replay redraws a full-screen TUI correctly in practice but is not a VT

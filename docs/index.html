@@ -105,6 +105,12 @@
     <li><strong>the first server frame is the scrollback, even empty</strong> — the attach signal.
       <code class="code">pty.js</code> resets its backoff only then, and every reconnect is
       <code class="code">?reattach</code>, attach-only.</li>
+    <li><strong>idleness never closes a terminal, silence does</strong> — a terminal is idle whenever
+      its human is thinking, so <code class="code">Pty.Socket</code> pings every
+      <code class="code">:ping_interval</code> (30 s) and the browser's automatic pongs reset
+      <code class="code">Pty.Plug</code>'s idle <code class="code">:timeout</code> (90 s, kept above
+      the interval). A client gone half-open stops answering and is closed, so its subscription
+      never pins a session.</li>
     <li><strong>a cross-origin browser upgrade is refused</strong> unless
       <code class="code">:check_origin</code> admits it.</li>
   </ul>

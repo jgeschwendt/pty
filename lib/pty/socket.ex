@@ -19,6 +19,10 @@ defmodule Pty.Socket do
       this connection is what starts the session.
     * `:reattach` — when true, never start a session: a client coming back to
       one it already had must not get a fresh shell under the old id.
+    * `:ping_interval` — milliseconds between WebSocket pings (default
+      `30_000`). Only a received frame resets the server's idle timeout, so
+      the client's automatic pongs keep a live socket open; set the upgrade's
+      `:timeout` above this, and a client gone half-open is closed by it.
 
   ## Wire protocol
 
@@ -57,6 +61,7 @@ defmodule Pty.Socket do
          {:ok, buffer} <- Pty.attach(session) do
       # Monitored, so even a session killed outright closes the socket.
       Process.monitor(session)
+      {:ok, _} = :timer.send_interval(Map.get(arg, :ping_interval, 30_000), :ping)
       {:push, {:binary, buffer}, %{session: session}}
     else
       # Never there, or ending as we attached: either way, gone.
@@ -105,6 +110,8 @@ defmodule Pty.Socket do
   def handle_info({:DOWN, _ref, :process, session, _reason}, %{session: session} = state) do
     {:stop, :normal, {@ws_close_ended, "session ended"}, state}
   end
+
+  def handle_info(:ping, state), do: {:push, {:ping, ""}, state}
 
   def handle_info(_msg, state), do: {:ok, state}
 end
