@@ -28,6 +28,10 @@
   // other code — 1000 included, which Bandit sends on its own shutdown — is
   // transport loss.
   var FINAL_CLOSE_CODES = [4000, 4404, 4422];
+  // CAN, then RIS (ESC c). Written in-band rather than term.reset(), which
+  // leaves xterm's parser mid-sequence — a frame the old socket cut inside an
+  // OSC would swallow the scrollback — and runs ahead of writes still queued.
+  var RESET = new Uint8Array([0x18, 0x1b, 0x63]);
 
   var DEFAULT_TERMINAL_OPTIONS = {
     allowProposedApi: true, // required by the unicode11 addon
@@ -92,7 +96,7 @@
           fresh = false;
           attached = true;
           delay = RECONNECT_BASE_MS;
-          term.reset();
+          term.write(RESET);
           sendDims();
           if (opts.onOpen) opts.onOpen();
         }
