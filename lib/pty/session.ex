@@ -19,8 +19,9 @@ defmodule Pty.Session do
   subscriber receives `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap —
   unless the session is killed outright (`:kill`, or the supervisor's brutal
   kill past its shutdown timeout), which skips `terminate/2`; monitor it.
-  A session killed outright still takes its child along: erlexec links the
-  two, so no path leaves an orphaned PTY.
+  A session killed outright still takes its child's process group along:
+  erlexec links the two. Jobs an interactive shell moved to groups of their
+  own survive that; a reap's hangup reaches them through the shell.
 
   Prefer the `Pty` facade; this module is the process itself.
 
