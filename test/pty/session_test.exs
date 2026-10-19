@@ -142,8 +142,13 @@ defmodule Pty.SessionTest do
 
   test "kill/1 reaps a live id and errors on an unknown one; kill_all/0 reaps and counts" do
     {id, _pid} = ready(start_session())
+    # Held, the registry cannot drop the dead session's keys itself: only terminate/2 can.
+    parts = for {_, part, _, _} <- Supervisor.which_children(Pty.SessionRegistry), do: part
+    Enum.each(parts, &:sys.suspend/1)
 
     assert Session.kill(id) == :ok
+    assert Session.kill(id) == {:error, :not_found}
+    Enum.each(parts, &:sys.resume/1)
     refute find_session(id)
     assert Session.whereis(id) == :error
     assert Session.kill("does-not-exist") == {:error, :not_found}
