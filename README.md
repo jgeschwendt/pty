@@ -90,6 +90,8 @@ Client sends JSON text frames; server sends binary output, the scrollback
 first (even empty — it is the "attached" signal):
 
 - `{"t":"i","d":"<keys>"}` — keyboard input → PTY stdin
+- `{"t":"b","d":"<bytes>"}` — raw input → PTY stdin, one byte per code point
+  0–255: xterm.js's `onBinary`, which carries every X10-encoded mouse report
 - `{"t":"r","cols":C,"rows":R}` — resize
 
 The server closes `4000` when the session ends, `4404` when a reconnect
@@ -100,8 +102,9 @@ tell a passing failure (resources) from a fault (an option that crashes init);
 the host's logs show which. `1000` is never the session's: Bandit
 sends it on its own shutdown, so a client treats it as transport loss.
 
-Malformed frames (bad JSON, unknown type, out-of-range or non-integer
-dimensions) are ignored at the boundary rather than crashing the session.
+Malformed frames (bad JSON, unknown type, a `"b"` code point above 255,
+out-of-range or non-integer dimensions) are ignored at the boundary rather than
+crashing the session.
 `Pty.Client.handle/2` is that decoder, so a LiveView or a Phoenix Channel can
 carry the same protocol without `Pty.Socket`.
 

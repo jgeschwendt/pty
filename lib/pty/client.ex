@@ -27,10 +27,13 @@ defmodule Pty.Client do
   validation as `Pty.Socket` without restating it:
 
     * `{"t":"i","d":"<keys>"}` — keyboard input → PTY stdin
+    * `{"t":"b","d":"<bytes>"}` — raw input → PTY stdin, one byte per code
+      point 0–255 (xterm.js's `onBinary`, which carries every X10-encoded
+      mouse report)
     * `{"t":"r","cols":C,"rows":R}` — resize (SIGWINCH to the child)
 
-  Anything else — malformed JSON, unknown type, non-integer or out-of-range
-  dimensions — decodes to `:ignore`. A bad frame is never a crashed session.
+  Anything else — malformed JSON, unknown type, a `"b"` code point above 255,
+  non-integer or out-of-range dimensions — decodes to `:ignore`. A bad frame is never a crashed session.
   """
 
   alias Pty.Session
@@ -52,6 +55,14 @@ defmodule Pty.Client do
   def decode(_frame), do: :ignore
 
   defp command(%{"t" => "i", "d" => data}) when is_binary(data), do: {:input, data}
+
+  # Latin-1 is exactly the code points 0–255 as bytes; anything above is an error tuple.
+  defp command(%{"t" => "b", "d" => data}) when is_binary(data) do
+    case :unicode.characters_to_binary(data, :utf8, :latin1) do
+      bytes when is_binary(bytes) -> {:input, bytes}
+      _error -> :ignore
+    end
+  end
 
   defp command(%{"t" => "r", "cols" => cols, "rows" => rows})
        when is_integer(cols) and cols > 0 and cols <= @max_dimension and
