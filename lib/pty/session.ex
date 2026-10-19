@@ -398,9 +398,7 @@ defmodule Pty.Session do
   # reports a hung-up child — whatever erlexec says: it overrides the status of
   # any child it stopped with 0. The id is freed first, so a start/2 during a
   # slow hangup gets a fresh session, not this dying one; the reaping key, taken
-  # before the id is let go, keeps it findable for a kill/1 by id meanwhile, and
-  # is dropped here once the child is gone: the registry's own cleanup lags the
-  # DOWN a kill/1 returns on, so a stale key would make the next kill/1 by id :ok.
+  # before the id is let go, keeps it findable for a kill/1 by id meanwhile.
   @impl true
   def terminate(_reason, state) do
     Registry.register(@registry, {:reaping, state.id, self()}, nil)
@@ -414,7 +412,6 @@ defmodule Pty.Session do
           await_exit(state)
         )
 
-    Registry.unregister(@registry, {:reaping, state.id, self()})
     broadcast(state.subs, {:pty_exit, code})
   end
 
