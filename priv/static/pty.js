@@ -16,7 +16,8 @@
 // bytes (one per char 0–255), {t:"r",cols,rows} for resize. OSC 0/2 (title) surfaces as the onTitle callback rather than a
 // document.title write — an embedded rail must not rename its host page. OSC 52
 // (clipboard) is xterm's ClipboardAddon, loaded only if the host passes it, and
-// write-only: a read would hand the viewer's clipboard to the shell.
+// write-only: a read would hand the viewer's clipboard to the shell, so connect()
+// swallows reads ahead of any clipboard handler registered before it.
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.Pty = factory();
@@ -129,6 +130,14 @@
         send({ t: "b", d: data });
       }),
       term.onResize(sendDims),
+      // An OSC 52 read ("52;c;?") answers with the viewer's clipboard as input
+      // to the shell — in a shared session, any attached user's. Swallowed here,
+      // not in mount(), so a host's own ClipboardAddon is covered too: the most
+      // recent handler is tried first, so writes still fall through to an addon
+      // loaded before connect(), whatever its provider or version.
+      term.parser.registerOscHandler(52, function (data) {
+        return data.split(";")[1] === "?";
+      }),
     ];
     if (opts.onTitle) listeners.push(term.onTitleChange(opts.onTitle));
 
@@ -177,16 +186,8 @@
       term.loadAddon(new xterm.Unicode11Addon());
       term.unicode.activeVersion = "11";
     }
-    if (xterm.ClipboardAddon) {
-      term.loadAddon(new xterm.ClipboardAddon());
-      // An OSC 52 read ("52;c;?") answers with the viewer's clipboard as input
-      // to the shell — in a shared session, any attached user's. Swallow reads
-      // in a handler of our own: the most recent is tried first, so writes
-      // still fall through to the addon whatever its provider or version.
-      term.parser.registerOscHandler(52, function (data) {
-        return data.split(";")[1] === "?";
-      });
-    }
+    // Before connect(), which registers the OSC 52 read guard after it.
+    if (xterm.ClipboardAddon) term.loadAddon(new xterm.ClipboardAddon());
     if (xterm.WebglAddon) {
       try {
         var webgl = new xterm.WebglAddon();
