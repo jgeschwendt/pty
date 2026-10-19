@@ -81,15 +81,17 @@ const frame = (socket, ...bytes) => socket.onmessage({ data: new Uint8Array(byte
 const last = () => sockets.at(-1);
 const names = (term) => term.log.map((entry) => [entry].flat()[0]);
 
-test("socketUrl: relative follows the page's scheme; ws(s) passes through", () => {
+test("socketUrl: http(s) maps to ws(s), relative to the page; ws(s) passes through", () => {
   Pty.connect(new Terminal(), "/pty?s=a");
   location.href = "http://example.test/";
-  Pty.connect(new Terminal(), "pty?s=b");
-  Pty.connect(new Terminal(), "ws://other.test/pty?s=c");
+  for (const url of ["pty?s=b", "HTTPS://other.test/pty", "ws://other.test/pty", "WSS://other.test/pty"])
+    Pty.connect(new Terminal(), url);
   expect(sockets.map((s) => s.url)).toEqual([
     "wss://example.test/pty?s=a",
     "ws://example.test/pty?s=b",
-    "ws://other.test/pty?s=c",
+    "wss://other.test/pty",
+    "ws://other.test/pty",
+    "wss://other.test/pty",
   ]);
   expect(sockets[0].binaryType).toBe("arraybuffer");
 });
