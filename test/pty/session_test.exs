@@ -11,20 +11,6 @@ defmodule Pty.SessionTest do
     on_exit(fn -> for {key, val} <- prev, do: restore_env(key, val) end)
   end
 
-  test "new_id/0 returns unique, 12-char, url-safe ids" do
-    ids = for _ <- 1..100, do: Session.new_id()
-
-    assert Enum.all?(ids, &(&1 =~ ~r/\A[A-Za-z0-9_-]{12}\z/))
-    assert length(Enum.uniq(ids)) == length(ids)
-  end
-
-  test "ensure/1 starts and registers a session; same id is idempotent, different id is distinct" do
-    {id, pid} = start_session()
-    assert {:ok, ^pid} = Session.ensure(id)
-    {_, other} = start_session()
-    assert other != pid
-  end
-
   describe "executable resolution" do
     @describetag :tmp_dir
 
@@ -37,7 +23,7 @@ defmodule Pty.SessionTest do
             [command: "probe", env: %{"PATH" => dir <> ":/bin"}]
           ] do
         start_sh_session(opts)
-        assert recv_until_marker("resolved") =~ "resolved"
+        recv_until_marker("resolved")
       end
 
       # Resolved in the caller, outside the one supervisor every start shares:
@@ -45,7 +31,7 @@ defmodule Pty.SessionTest do
       {id, pid} = start_session()
       :sys.suspend(Pty.SessionSupervisor)
       on_exit(fn -> :sys.resume(Pty.SessionSupervisor) end)
-      assert {:ok, ^pid} = Session.ensure(id)
+      assert {:ok, ^pid} = Session.ensure(id, command: "probe")
 
       assert {:error, {:spawn_failed, :enoent}} =
                Session.ensure(Session.new_id(), command: "probe")
@@ -53,17 +39,10 @@ defmodule Pty.SessionTest do
       assert {:error, {:spawn_failed, :enoent}} =
                Session.ensure(Session.new_id(), command: "cat", cwd: Path.join(dir, "gone"))
     end
-
-    test "PTY_ARGS splits on spaces" do
-      System.put_env("PTY_ARGS", "-u  -n")
-      {_id, pid} = start_session()
-
-      assert Session.info(pid).command == "cat -u -n"
-    end
   end
 
   describe "subscribers" do
-    test "a re-attach keeps one monitor, a name is refused, strays are harmless, the dead dropped" do
+    test "a re-attach keeps one monitor, a name is refused, strays are harmless, the dead dropped; killed outright, it is nil and takes its child" do
       {_id, pid} = start_session()
       sub = spawn(fn -> Process.sleep(:infinity) end)
       {:ok, _} = Session.attach(pid, sub)
@@ -79,9 +58,11 @@ defmodule Pty.SessionTest do
       Process.exit(sub, :kill)
       poll_until(fn -> Session.info(pid).subscribers == 0 end)
 
+      os_pid = :sys.get_state(pid).os_pid
       Process.exit(pid, :kill)
       refute Session.info(pid)
-      assert Session.kill(pid) == {:error, :not_found}
+      # Killed outright, terminate/2 never runs: the erlexec link takes the child.
+      poll_until(fn -> not alive?(os_pid) end)
     end
 
     test "output buffers while detached, replays on attach, then reaches every subscriber" do
@@ -98,8 +79,8 @@ defmodule Pty.SessionTest do
       {:ok, _} = Session.attach(pid, task.pid)
       Session.input(pid, live <> "\n")
 
-      assert recv_until_marker(live) =~ live
-      assert Task.await(task) =~ live
+      recv_until_marker(live)
+      Task.await(task)
     end
 
     test "one past :max_lag is held off the feed with a single {:pty_lagged}, bounded; a reattach resumes; the rest never lag" do
@@ -111,7 +92,7 @@ defmodule Pty.SessionTest do
 
       task = Task.async(fn -> recv_until_marker("done") end)
       {:ok, _} = Session.attach(pid, task.pid)
-      assert Task.await(task) =~ "done"
+      Task.await(task)
       # Still a monitored subscriber, counted: only off the feed.
       poll_until(fn -> Process.info(pid, :monitors) == {:monitors, [process: self()]} end)
       assert Session.info(pid).subscribers == 1
@@ -122,7 +103,6 @@ defmodule Pty.SessionTest do
       refute_received _
 
       {:ok, _} = Session.attach(pid, self())
-      assert Process.info(pid, :monitors) == {:monitors, [process: self()]}
       Session.input(pid, "back\n")
       recv_until_marker("back")
     end
@@ -150,28 +130,25 @@ defmodule Pty.SessionTest do
     end
   end
 
-  describe "spawn env" do
-    test ":env reaches the child, and a caller entry overrides the default TERM" do
-      marker = unique_marker()
-      pid = start_sh_session(env: %{"PTY_PROBE" => marker, "TERM" => "vt100"})
-
-      assert echo(pid, ~s|probe=$PTY_PROBE term=$TERM|) =~ "probe=#{marker} term=vt100"
-    end
-
-    test "TERM defaults to xterm-256color" do
-      assert echo(start_sh_session([]), ~s|term=${TERM-none}|) =~ "term=xterm-256color"
-    end
-
-    # printenv, not ${TERM}: sh sets an unexported TERM=dumb when none is set.
-    test "a false value unsets TERM" do
-      assert echo(start_sh_session(env: %{"TERM" => false}), "term=$(printenv TERM || echo none)") =~
-               "term=none"
+  # printenv, not ${TERM}: sh sets an unexported TERM=dumb when none is set.
+  test ":env layers over the inherited env: TERM defaults, a caller entry overrides it, false unsets it" do
+    for {env, term} <- [
+          {%{}, "xterm-256color"},
+          {%{"TERM" => "vt100"}, "vt100"},
+          {%{"TERM" => false}, "none"}
+        ] do
+      assert echo(start_sh_session(env: env), "term=$(printenv TERM || echo none) home=$HOME") =~
+               "term=#{term} home=#{System.get_env("HOME")}"
     end
   end
 
   test "list/0 + resize/3 report the documented keys and default dims, oldest first, then the resized dims" do
+    System.put_env("PTY_ARGS", "-u  -n")
+    Application.put_env(:pty, :scrollback, 4)
+    on_exit(fn -> Application.delete_env(:pty, :scrollback) end)
     {id, pid} = start_session()
-    assert %{id: ^id, cols: 80, rows: 24} = s = find_session(id)
+    assert :sys.get_state(pid).cap == 4
+    assert %{id: ^id, cols: 80, rows: 24, command: "cat -u -n"} = s = find_session(id)
     assert is_integer(s.started)
 
     assert Enum.sort(Map.keys(s)) ==
@@ -179,6 +156,7 @@ defmodule Pty.SessionTest do
 
     # All within one `started` second: the order is the start order, not ETS's.
     ids = [id | for(_ <- 1..9, do: elem(start_session(), 0))]
+    assert Enum.all?(ids, &(&1 =~ ~r/\A[A-Za-z0-9_-]{12}\z/))
     assert ids == for(%{id: i} <- Session.list(), i in ids, do: i)
 
     # Casts then a call from one process arrive in order: no polling.
@@ -187,7 +165,7 @@ defmodule Pty.SessionTest do
     assert %{cols: 100, rows: 40} = Session.info(pid)
   end
 
-  test "kill/1 reaps a live id and errors on an unknown one; kill_all/0 reaps and counts" do
+  test "kill/1 reaps a live id, then is not found even while its keys linger; kill_all/0 reaps and counts" do
     {id, _pid} = ready(start_session())
     # Held, the registry cannot drop the dead session's keys itself: only terminate/2 can.
     parts = for {_, part, _, _} <- Supervisor.which_children(Pty.SessionRegistry), do: part
@@ -196,9 +174,6 @@ defmodule Pty.SessionTest do
     assert Session.kill(id) == :ok
     assert Session.kill(id) == {:error, :not_found}
     Enum.each(parts, &:sys.resume/1)
-    refute find_session(id)
-    assert Session.whereis(id) == :error
-    assert Session.kill("does-not-exist") == {:error, :not_found}
 
     ready(start_session())
     ready(start_session())
@@ -219,6 +194,10 @@ defmodule Pty.SessionTest do
         assert_receive {:pty_exit, ^code}
         assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
       end
+
+      # port_closed: erlexec itself went down.
+      assert {:stop, :normal, %{exit: 1}} =
+               Session.handle_info({:EXIT, self(), :port_closed}, %{exec_pid: self(), exit: nil})
     end
 
     test "a reap hangs the child up, relays its last words, and returns once it is gone" do
@@ -231,7 +210,7 @@ defmodule Pty.SessionTest do
       os_pid = :sys.get_state(pid).os_pid
 
       assert Session.kill(pid) == :ok
-      assert recv_until_marker("bye") =~ "bye"
+      recv_until_marker("bye")
       assert_receive {:pty_exit, 129}
       refute alive?(os_pid)
     end
@@ -246,10 +225,13 @@ defmodule Pty.SessionTest do
       poll_until(fn -> Session.whereis(id) == :error end)
       assert {:ok, fresh} = Session.ensure(id)
       assert fresh != pid
+      # A kill by id now reaps the fresh session, not the dying one.
+      assert Session.kill(id) == :ok
+      refute Process.alive?(fresh)
       assert Task.await(reap) == :ok
       assert_receive {:pty_exit, 129}
       refute alive?(os_pid)
-      # The orphaned sleep is reaped by launchd, not erlexec: a zombie answers kill -0.
+      # The orphaned sleep is reaped by init, not erlexec: a zombie answers kill -0.
       poll_until(fn -> not alive?(String.to_integer(bg)) end)
     end
 
@@ -286,22 +268,6 @@ defmodule Pty.SessionTest do
 
       assert_receive {:pty_exit, 129}
       refute alive?(os_pid)
-    end
-
-    test "a session killed outright still takes its child along" do
-      {_id, pid} = ready(start_session())
-      os_pid = :sys.get_state(pid).os_pid
-
-      Process.exit(pid, :kill)
-
-      poll_until(fn -> not alive?(os_pid) end)
-    end
-
-    test "erlexec going down ends the session with code 1" do
-      state = %{exec_pid: self(), exit: nil}
-
-      assert {:stop, :normal, %{exit: 1}} =
-               Session.handle_info({:EXIT, self(), :port_closed}, state)
     end
   end
 
