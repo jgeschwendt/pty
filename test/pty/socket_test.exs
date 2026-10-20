@@ -82,8 +82,8 @@ defmodule Pty.SocketTest do
     end
 
     test "any other start failure closes 1011, the client retries, and the log says why" do
-      # An argument that is no string crashes init/1 past the spawn check; an env
-      # value with no string form raises while ensure/2 resolves the spawn.
+      # An argument that is no string, or an env value with no string form, raises
+      # while ensure/2 resolves the spawn.
       for {opts, why} <- [
             {[args: [1]], ":function_clause"},
             {[env: %{"X" => %{}}], "%Protocol.UndefinedError{"}

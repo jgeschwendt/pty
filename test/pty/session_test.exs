@@ -60,7 +60,7 @@ defmodule Pty.SessionTest do
       os_pid = :sys.get_state(pid).os_pid
       Process.exit(pid, :kill)
       refute Session.info(pid)
-      # 4 s: a cat not yet exec'd ignores the link's SIGTERM; SIGKILL follows 1 s on.
+      # Up to 4 s: no ready/1 here, so the cat may not have exec'd yet.
       poll_until(fn -> not alive?(os_pid) end, 160)
     end
 
