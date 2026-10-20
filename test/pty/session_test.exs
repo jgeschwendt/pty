@@ -1,10 +1,12 @@
 defmodule Pty.SessionTest do
-  # PTY_CMD and the global kill/kill_all touch shared state — never concurrent.
+  # PTY_* and :pty app env, and the global kill_all, are shared state — never concurrent.
   use ExUnit.Case, async: false
 
   import Pty.TestHelpers
 
   alias Pty.Session
+
+  @state %{buffer: :queue.new(), buffer_bytes: 0, cap: 0, max_lag: -1, os_pid: 1, subs: %{}}
 
   setup do
     prev = for key <- ~w(PTY_CMD PTY_ARGS), do: {key, System.get_env(key)}
@@ -20,7 +22,7 @@ defmodule Pty.SessionTest do
 
       for opts <- [
             [command: "./probe", cwd: dir],
-            [command: "probe", env: %{"PATH" => dir <> ":/bin"}]
+            [command: "probe", cwd: dir, env: %{"PATH" => ".:/bin"}]
           ] do
         start_sh_session(opts)
         recv_until_marker("resolved")
@@ -42,9 +44,11 @@ defmodule Pty.SessionTest do
   end
 
   describe "subscribers" do
-    test "a re-attach keeps one monitor, a name is refused, strays are harmless, the dead dropped; killed outright, it is nil and takes its child" do
+    test "subscriber bookkeeping: one monitor per pid, strays harmless, the dead dropped; killed outright, the child goes too" do
       {_id, pid} = start_session()
       sub = spawn(fn -> Process.sleep(:infinity) end)
+      {:ok, _} = Session.attach(pid, sub)
+      Session.detach(pid, sub)
       {:ok, _} = Session.attach(pid, sub)
       {:ok, _} = Session.attach(pid, sub)
       assert Process.info(pid, :monitors) == {:monitors, [process: sub]}
@@ -83,7 +87,7 @@ defmodule Pty.SessionTest do
       Task.await(task)
     end
 
-    test "one past :max_lag is held off the feed with a single {:pty_lagged}, bounded; a reattach resumes; the rest never lag" do
+    test "a subscriber past :max_lag gets one {:pty_lagged} and leaves the feed until it reattaches; a reader keeps up" do
       pid =
         start_sh_session(
           args: ["-c", "for i in $(seq 20); do echo $i; sleep 0.01; done; echo done; exec cat"],
@@ -107,7 +111,7 @@ defmodule Pty.SessionTest do
       recv_until_marker("back")
     end
 
-    test "only a live local subscriber is measured: a dead or remote one is sent to as before" do
+    test "only a live local subscriber is measured; a detach drops a lagged one" do
       dead = spawn(fn -> :ok end)
       ref = Process.monitor(dead)
       assert_receive {:DOWN, ^ref, _, _, _}
@@ -119,7 +123,7 @@ defmodule Pty.SessionTest do
         |> :erlang.binary_to_term()
 
       subs = Map.new([self(), dead, remote], &{&1, make_ref()})
-      state = %{os_pid: 1, subs: subs, buffer: :queue.new(), buffer_bytes: 0, cap: 0, max_lag: -1}
+      state = %{@state | subs: subs}
 
       assert {:noreply, %{subs: kept}} = Session.handle_info({:stdout, 1, "x"}, state)
       assert kept == %{subs | self() => {:lagged, subs[self()]}}
@@ -131,18 +135,24 @@ defmodule Pty.SessionTest do
   end
 
   # printenv, not ${TERM}: sh sets an unexported TERM=dumb when none is set.
-  test ":env layers over the inherited env: TERM defaults, a caller entry overrides it, false unsets it" do
+  test ":env layers over the inherited env: TERM defaults, a caller entry overrides it, false unsets it; resize sets the size" do
     for {env, term} <- [
           {%{}, "xterm-256color"},
           {%{"TERM" => "vt100"}, "vt100"},
           {%{"TERM" => false}, "none"}
         ] do
-      assert echo(start_sh_session(env: env), "term=$(printenv TERM || echo none) home=$HOME") =~
-               "term=#{term} home=#{System.get_env("HOME")}"
+      assert echo(
+               start_sh_session(env: env),
+               "term=$(printenv TERM || echo none) home=$HOME size=$(stty size)"
+             ) =~ "term=#{term} home=#{System.get_env("HOME")} size=24 80"
     end
+
+    pid = start_sh_session([])
+    Session.resize(pid, 100, 40)
+    assert echo(pid, "size=$(stty size)") =~ "size=40 100"
   end
 
-  test "list/0 + resize/3 report the documented keys and default dims, oldest first, then the resized dims" do
+  test "spec resolution and metadata: PTY_ARGS split, app env, documented keys, start order, resize" do
     System.put_env("PTY_ARGS", "-u  -n")
     Application.put_env(:pty, :scrollback, 4)
     on_exit(fn -> Application.delete_env(:pty, :scrollback) end)
@@ -159,7 +169,7 @@ defmodule Pty.SessionTest do
     assert Enum.all?(ids, &(&1 =~ ~r/\A[A-Za-z0-9_-]{12}\z/))
     assert ids == for(%{id: i} <- Session.list(), i in ids, do: i)
 
-    # Casts then a call from one process arrive in order: no polling.
+    # 80x24 is unchanged: the winsz skip. Casts then a call arrive in order: no polling.
     Session.resize(pid, 80, 24)
     Session.resize(pid, 100, 40)
     assert %{cols: 100, rows: 40} = Session.info(pid)
@@ -167,19 +177,21 @@ defmodule Pty.SessionTest do
 
   test "kill/1 reaps a live id, then is not found even while its keys linger; kill_all/0 reaps and counts" do
     {id, _pid} = ready(start_session())
+    {_, doomed} = start_session()
     # Held, the registry cannot drop the dead session's keys itself: only terminate/2 can.
     parts = for {_, part, _, _} <- Supervisor.which_children(Pty.SessionRegistry), do: part
     Enum.each(parts, &:sys.suspend/1)
+    Process.exit(doomed, :kill)
 
     assert Session.kill(id) == :ok
     assert Session.kill(id) == {:error, :not_found}
+    assert Session.list() == []
     Enum.each(parts, &:sys.resume/1)
 
-    ready(start_session())
-    ready(start_session())
+    for _ <- 1..2, do: ready(start_session())
 
     # kill_all is global; the suite is async: false so nothing else is live.
-    assert Session.kill_all() >= 2
+    assert Session.kill_all() == 2
     assert Session.list() == []
   end
 
@@ -275,9 +287,8 @@ defmodule Pty.SessionTest do
     # Driven through the callbacks: no pty needed to exercise the deque.
     tail = String.duplicate("t", 100)
     chunk = String.duplicate("x", 900) <> tail
-    state = %{os_pid: 1, subs: %{}, buffer: :queue.new(), buffer_bytes: 0, cap: 100}
-    {:noreply, kept} = Session.handle_info({:stdout, 1, chunk}, state)
-    {:noreply, off} = Session.handle_info({:stdout, 1, chunk}, %{state | cap: 0})
+    {:noreply, kept} = Session.handle_info({:stdout, 1, chunk}, %{@state | cap: 100})
+    {:noreply, off} = Session.handle_info({:stdout, 1, chunk}, @state)
 
     assert {:reply, {:ok, ^tail}, %{buffer_bytes: 100}} =
              Session.handle_call({:attach, self()}, nil, kept)

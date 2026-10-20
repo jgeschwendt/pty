@@ -42,6 +42,8 @@ defmodule Pty.Session do
   | `:scrollback`| `:scrollback`            | —          | `256_000` bytes      |
   | `:max_lag`   | `:max_lag`               | —          | `1_000` messages     |
 
+  `:args` is a list (a lone string is one argument); `PTY_ARGS` alone is split on spaces.
+
   `:max_lag` must be a positive integer; anything else is refused as
   `{:error, {:spawn_failed, {:invalid_option, {:max_lag, value}}}}`. A local
   subscriber more than `:max_lag` messages behind is sent one `{:pty_lagged}`
@@ -190,71 +192,14 @@ defmodule Pty.Session do
     :exit, _ -> nil
   end
 
-  ## Process wiring
-
-  def start_link({id, opts}) do
-    stamp = System.unique_integer([:monotonic])
-    GenServer.start_link(__MODULE__, {id, opts}, name: {:via, Registry, {@registry, id, stamp}})
-  end
-
-  ## Server
-
-  @impl true
-  def init({id, spec}) do
-    # Trap exits so terminate/2 runs on supervisor shutdown, and so the child's
-    # exit arrives as a message through the erlexec link.
-    Process.flag(:trap_exit, true)
-    command_line = Enum.join([spec.cmd | spec.args], " ")
-
-    exec_opts = [
-      :stdin,
-      :stdout,
-      # In pty mode stdout/stderr share one master fd; fold stderr into stdout
-      # so subscribers get the single coherent stream a real terminal carries.
-      {:stderr, :stdout},
-      # Linked, not monitored: if this process dies by any means, erlexec stops
-      # the child — SIGTERM, then SIGKILL, to its whole process group.
-      :link,
-      {:kill_timeout, @kill_timeout_s},
-      :kill_group,
-      :pty,
-      # A real terminal echoes typed input; keep echo on to match that.
-      :pty_echo,
-      # erlexec's winsz is {rows, cols} — the reverse of our cols/rows API.
-      {:winsz, {spec.rows, spec.cols}},
-      {:env, Map.to_list(spec.env)},
-      {:cd, spec.cwd}
-    ]
-
-    case :exec.run([spec.executable | Enum.map(spec.args, &String.to_charlist/1)], exec_opts) do
-      {:ok, exec_pid, os_pid} ->
-        Logger.info("session #{id} started (#{command_line})")
-
-        {:ok,
-         spec
-         |> Map.take([:cap, :cols, :max_lag, :rows])
-         |> Map.merge(%{
-           buffer: :queue.new(),
-           buffer_bytes: 0,
-           command: command_line,
-           exec_pid: exec_pid,
-           exit: nil,
-           id: id,
-           os_pid: os_pid,
-           started: System.system_time(:second),
-           subs: %{}
-         })}
-
-      {:error, reason} ->
-        {:stop, {:spawn_failed, reason}}
-    end
-  end
+  ## Spawn spec
 
   # Resolved in the caller, never inside the one supervisor every start queues
   # on: executable/3 probes the filesystem, and a hung mount must stall only its
   # own start. erlexec launches its child asynchronously — run/2 returns {:ok, …}
   # even for a missing binary or cwd — so both are checked here, up front.
   defp spec(opts) do
+    args = opts |> resolve(:args, "PTY_ARGS", fn -> [] end) |> List.wrap()
     cmd = resolve(opts, :command, "PTY_CMD", fn -> System.get_env("SHELL") || "/bin/sh" end)
     cwd = resolve(opts, :cwd, "PTY_CWD", &File.cwd!/0)
     env = env(opts)
@@ -268,13 +213,12 @@ defmodule Pty.Session do
          {:ok, executable} <- executable(cmd, cwd, env) do
       {:ok,
        %{
-         args: resolve(opts, :args, "PTY_ARGS", fn -> [] end) |> List.wrap(),
+         argv: [executable | Enum.map(args, &String.to_charlist/1)],
          cap: resolve(opts, :scrollback, nil, fn -> 256_000 end),
-         cmd: cmd,
          cols: resolve(opts, :cols, nil, fn -> 80 end),
+         command: Enum.join([cmd | args], " "),
          cwd: cwd,
          env: env,
-         executable: executable,
          max_lag: max_lag,
          rows: resolve(opts, :rows, nil, fn -> 24 end)
        }}
@@ -323,6 +267,64 @@ defmodule Pty.Session do
     |> Enum.into(%{"TERM" => "xterm-256color"}, fn {key, value} ->
       {to_string(key), value != false && to_string(value)}
     end)
+  end
+
+  ## Process wiring
+
+  def start_link({id, opts}) do
+    stamp = System.unique_integer([:monotonic])
+    GenServer.start_link(__MODULE__, {id, opts}, name: {:via, Registry, {@registry, id, stamp}})
+  end
+
+  ## Server
+
+  @impl true
+  def init({id, spec}) do
+    # Trap exits so terminate/2 runs on supervisor shutdown, and so the child's
+    # exit arrives as a message through the erlexec link.
+    Process.flag(:trap_exit, true)
+
+    exec_opts = [
+      :stdin,
+      :stdout,
+      # In pty mode stdout/stderr share one master fd; fold stderr into stdout
+      # so subscribers get the single coherent stream a real terminal carries.
+      {:stderr, :stdout},
+      # Linked, not monitored: if this process dies by any means, erlexec stops
+      # the child — SIGTERM, then SIGKILL, to its whole process group.
+      :link,
+      {:kill_timeout, @kill_timeout_s},
+      :kill_group,
+      :pty,
+      # A real terminal echoes typed input; keep echo on to match that.
+      :pty_echo,
+      # erlexec's winsz is {rows, cols} — the reverse of our cols/rows API.
+      {:winsz, {spec.rows, spec.cols}},
+      {:env, Map.to_list(spec.env)},
+      {:cd, spec.cwd}
+    ]
+
+    case :exec.run(spec.argv, exec_opts) do
+      {:ok, exec_pid, os_pid} ->
+        Logger.info("session #{id} started (#{spec.command})")
+
+        {:ok,
+         spec
+         |> Map.take([:cap, :cols, :command, :max_lag, :rows])
+         |> Map.merge(%{
+           buffer: :queue.new(),
+           buffer_bytes: 0,
+           exec_pid: exec_pid,
+           exit: nil,
+           id: id,
+           os_pid: os_pid,
+           started: System.system_time(:second),
+           subs: %{}
+         })}
+
+      {:error, reason} ->
+        {:stop, {:spawn_failed, reason}}
+    end
   end
 
   @impl true
