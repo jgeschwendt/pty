@@ -41,7 +41,8 @@
 
 <header class="stack">
   <p class="eyebrow">embeddable PTY sessions for Elixir hosts</p>
-  <p class="lead docs-lead">erlexec drives one OS child per session, out of process; a session owns
+  <p class="lead docs-lead">erlexec drives one OS child per session through a separate exec-port daemon, not a NIF,
+    so a crash in native PTY handling takes one OS child, never the host's VM. A session owns
     its PTY and outlives every client. Closing a tab, refreshing or dropping the network only
     detaches; reattaching by id replays the scrollback and rejoins the same live process, and any
     number of clients can share one terminal. The library serves nothing itself: the host owns the
@@ -59,8 +60,8 @@
   <header>
     <h2 class="h2">Map</h2>
     <p class="docs-note">Every public call goes through the facade and takes a session as an id or a
-      pid. The API, the integration recipes and the security model are in the
-      <a class="link" href="https://github.com/jgeschwendt/pty#readme">README</a>.</p>
+      pid. The API, the options and the integration recipes are in
+      <a class="link" href="https://github.com/jgeschwendt/pty/blob/main/AGENTS.md">AGENTS.md</a>.</p>
   </header>
   <figure class="figure"><img class="figure-light" src="figures/session-lifecycle.png" alt="Pty.start/2 spawns a child through erlexec into a Pty.Session, which fans each output chunk out to every subscriber and onto a bounded scrollback. The session ends only when the child exits (its status) or a reap stops it (129); either way terminate/2 sends every subscriber one {:pty_exit, code}. A reap hangs up the child's process group: SIGHUP at once, a 2 s grace, then SIGTERM, then SIGKILL 1 s later." /><img class="figure-dark" src="figures/session-lifecycle-dark.png" alt="" aria-hidden="true" loading="lazy" /><figcaption>The session lifecycle: start and attach, fan-out and scrollback, the two ends, and the hangup ladder a reap runs. Source: Claude Design canvas <code class="code">pty figures</code>, board session-lifecycle.</figcaption></figure>
   <div class="table-wrap">
@@ -120,7 +121,15 @@
       the interval). A client gone half-open stops answering and is closed, so its subscription
       never pins a session.</li>
     <li><strong>a cross-origin browser upgrade is refused</strong> unless
-      <code class="code">:check_origin</code> admits it.</li>
+      <code class="code">:check_origin</code> admits it — a WebSocket handshake escapes CORS, so
+      without it any page could open a terminal on a loopback-only host.</li>
+    <li><strong>the library ships no authentication</strong> — a reachable session is a shell running
+      as the host's user, remote code execution by design; the host gates the route that mounts
+      <code class="code">Pty.Plug</code> (an authenticated pipeline or a loopback bind, TLS beyond
+      loopback). An id is unguessable and validated (<code class="code">[\w-]{1,64}</code>) before
+      it reaches a log or the registry, but it is a name, not a credential.</li>
+    <li><strong>OSC 52 clipboard reads are swallowed</strong> by <code class="code">pty.js</code> —
+      the reply would hand the viewer's clipboard to the shell and so to everyone attached.</li>
   </ul>
 </section>
 
@@ -183,6 +192,9 @@
       with zero reads). The hangup's relay is bounded the same way, and a lagged subscriber still
       hears the <code class="code">{:pty_exit, code}</code>. A subscriber on another node is not
       measured: <code class="code">Process.info/2</code> is local-only.</li>
+    <li><strong>Scrollback is raw bytes, not a VT snapshot</strong> — a bounded deque of output
+      chunks (a single chunk over the cap keeps its tail). Replay redraws a full-screen TUI in
+      practice; exactness would mean parsing terminal state server-side.</li>
     <li><strong>An outright kill reaches only the child's process group</strong> — a job an
       interactive shell put in its own group (<code class="code">sleep 100000 &amp;</code>) outlives a
       <code class="code">:kill</code> or a brutal supervisor kill; a reap's hangup reaches it through the shell.</li>
@@ -202,7 +214,7 @@
     <li>A lagged <code class="code">Pty.Socket</code> drains up to <code class="code">:max_lag</code> queued chunks before it closes <code class="code">1013</code>, and a client slower than the child's output resyncs (RESET + ≤ 256 KB replay) about once a second while the burst lasts, since the first frame resets the backoff; a flush of queued <code class="code">{:pty_data}</code> on lag and a backoff that survives a <code class="code">1013</code> are the candidates.</li>
     <li>A child that floods without end through SIGHUP and ignores SIGTERM is never SIGKILLed (probe: <code class="code">trap '' TERM; trap 'while :; do echo x; done' HUP</code>, ~480 k chunks/s, alive 10 s on, before and after backpressure) — exec-port's kill timer starves behind the output, so the reap never returns; confirm in erlexec and bound it (a session-side SIGKILL past the ladder).</li>
   </ol>
-  <p class="docs-foot">pty · <a class="link" href="https://github.com/jgeschwendt/pty">jgeschwendt/pty</a> · the README is the API reference.</p>
+  <p class="docs-foot">pty · <a class="link" href="https://github.com/jgeschwendt/pty">jgeschwendt/pty</a> · <code class="code">AGENTS.md</code> is the API reference.</p>
 </section>
 
 </main>

@@ -57,7 +57,6 @@ defmodule Pty.MixProject do
 
   defp docs do
     [
-      extras: ["README.md"],
       groups_for_modules: [
         Core: [Pty, Pty.Session],
         Transport: [Pty.Client, Pty.Plug, Pty.Socket]
