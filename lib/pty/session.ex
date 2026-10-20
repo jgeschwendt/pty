@@ -271,9 +271,9 @@ defmodule Pty.Session do
 
   ## Process wiring
 
-  def start_link({id, opts}) do
+  def start_link({id, spec}) do
     stamp = System.unique_integer([:monotonic])
-    GenServer.start_link(__MODULE__, {id, opts}, name: {:via, Registry, {@registry, id, stamp}})
+    GenServer.start_link(__MODULE__, {id, spec}, name: {:via, Registry, {@registry, id, stamp}})
   end
 
   ## Server
