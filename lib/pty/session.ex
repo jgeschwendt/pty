@@ -15,10 +15,11 @@ defmodule Pty.Session do
   SIGKILL 1 s after, both to its process group — relays what it prints on the
   way out, and returns once it is gone. Its id is free from the first instant,
   so an `ensure/2` mid-hangup starts a fresh session, while a `kill/1` by id
-  meanwhile reaps that fresh one, or else waits the dying one out. Either way every
-  subscriber receives `{:pty_exit, code}`: the child's exit code, or `129` (hung up) for any reap —
-  unless the session is killed outright (`:kill`, or the supervisor's brutal
-  kill past its shutdown timeout), which skips `terminate/2`; monitor it.
+  meanwhile reaps that fresh one, or else waits the dying one out. Either way
+  every subscriber receives `{:pty_exit, code}`: the child's exit code, or
+  `129` (hung up) for a reap or a crash — unless the session is killed outright
+  (`:kill`, or the supervisor's brutal kill past its shutdown timeout), which
+  skips `terminate/2`; monitor it.
   A session killed outright still takes its child's process group along:
   erlexec links the two. Jobs an interactive shell moved to groups of their
   own survive that; a reap's hangup reaches them through the shell.
@@ -104,7 +105,7 @@ defmodule Pty.Session do
            DynamicSupervisor.start_child(@supervisor, {__MODULE__, {id, spec}}),
          do: {:ok, pid}
   catch
-    # A malformed option raises here as it once did in init/1: an error, not a crash.
+    # spec/1 raising on a malformed option returns as a raising init/1 would: {reason, stacktrace}.
     :error, reason -> {:error, {reason, __STACKTRACE__}}
   end
 
@@ -230,21 +231,19 @@ defmodule Pty.Session do
         Logger.info("session #{id} started (#{command_line})")
 
         {:ok,
-         %{
-           id: id,
-           exec_pid: exec_pid,
-           os_pid: os_pid,
-           command: command_line,
-           started: System.system_time(:second),
-           subs: %{},
+         spec
+         |> Map.take([:cap, :cols, :max_lag, :rows])
+         |> Map.merge(%{
            buffer: :queue.new(),
            buffer_bytes: 0,
-           cap: spec.cap,
+           command: command_line,
+           exec_pid: exec_pid,
            exit: nil,
-           max_lag: spec.max_lag,
-           cols: spec.cols,
-           rows: spec.rows
-         }}
+           id: id,
+           os_pid: os_pid,
+           started: System.system_time(:second),
+           subs: %{}
+         })}
 
       {:error, reason} ->
         {:stop, {:spawn_failed, reason}}
@@ -301,10 +300,12 @@ defmodule Pty.Session do
   # A path is taken against the child's cwd, a bare name searched on the `:env`
   # PATH if given, else the node's own; a missing cwd finds nothing.
   defp executable(cmd, cwd, env) do
-    path = env["PATH"] || System.get_env("PATH", "")
-
     # PATH entries are taken against the child's cwd too ("" is the cwd itself).
-    path = path |> String.split(":") |> Enum.map_join(":", &Path.expand(&1, cwd))
+    path =
+      (env["PATH"] || System.get_env("PATH", ""))
+      |> String.split(":")
+      |> Enum.map_join(":", &Path.expand(&1, cwd))
+
     name = if cmd =~ "/", do: Path.expand(cmd, cwd), else: cmd
 
     case File.dir?(cwd) && :os.find_executable(String.to_charlist(name), String.to_charlist(path)) do
@@ -314,19 +315,19 @@ defmodule Pty.Session do
   end
 
   # erlexec's :env extends the inherited environment; `false` unsets a parent
-  # variable. Map.new keeps one entry per name, last wins — the caller's over the
-  # TERM default — normalised to strings for executable/3's PATH lookup.
+  # variable. Enum.into keeps one entry per name, last wins — the caller's over
+  # the TERM default — normalised to strings for executable/3's PATH lookup.
   defp env(opts) do
-    [{"TERM", "xterm-256color"} | Enum.to_list(resolve(opts, :env, nil, fn -> [] end))]
-    |> Map.new(fn
-      {key, false} -> {to_string(key), false}
-      {key, value} -> {to_string(key), to_string(value)}
+    opts
+    |> resolve(:env, nil, fn -> [] end)
+    |> Enum.into(%{"TERM" => "xterm-256color"}, fn {key, value} ->
+      {to_string(key), value != false && to_string(value)}
     end)
   end
 
   @impl true
   def handle_call(:info, _from, state) do
-    info = Map.take(state, [:id, :command, :started, :buffer_bytes, :cols, :rows])
+    info = Map.take(state, [:buffer_bytes, :cols, :command, :id, :rows, :started])
     {:reply, Map.put(info, :subscribers, map_size(state.subs)), state}
   end
 
@@ -361,7 +362,6 @@ defmodule Pty.Session do
   def handle_info({:stdout, os_pid, data}, %{os_pid: os_pid} = state),
     do: {:noreply, append(feed(state, data), data)}
 
-  # The child exited: the link delivers its status. terminate/2 tells subscribers.
   def handle_info({:EXIT, exec_pid, reason}, %{exec_pid: exec_pid} = state),
     do: {:stop, :normal, %{state | exit: exit_code(reason)}}
 
@@ -410,31 +410,28 @@ defmodule Pty.Session do
   # counted, and told the exit. It reattaches to resync from the scrollback, as
   # tmux does. Process.info/2 raises on a remote pid, so only a local one is
   # measured; a dead one is nil, sent to as before, and dropped by its DOWN.
-  defp feed(state, data), do: %{state | subs: Map.new(state.subs, &feed(&1, data, state.max_lag))}
+  defp feed(state, data),
+    do: %{state | subs: :maps.map(&feed(&1, &2, data, state.max_lag), state.subs)}
 
-  defp feed({_sub, {:lagged, _}} = lagged, _data, _max_lag), do: lagged
+  defp feed(_sub, {:lagged, _} = lagged, _data, _max_lag), do: lagged
 
-  defp feed({sub, ref}, data, max_lag) do
+  defp feed(sub, ref, data, max_lag) do
     if node(sub) == node() and
          match?({_, n} when n > max_lag, Process.info(sub, :message_queue_len)) do
       send(sub, {:pty_lagged})
-      {sub, {:lagged, ref}}
+      {:lagged, ref}
     else
       send(sub, {:pty_data, data})
-      {sub, ref}
+      ref
     end
   end
 
-  defp unlag({:lagged, ref}), do: ref
-  defp unlag(ref), do: ref
+  defp unlag(ref), do: with({:lagged, ref} <- ref, do: ref)
 
-  # Every end — exit, reap, crash — passes here, so every subscriber, lagged
-  # included, hears it once. A live child is hung up and awaited; the link
-  # guarantees its EXIT (port_closed at worst). A reap reports 129 — 128 + SIGHUP, as a shell
-  # reports a hung-up child — whatever erlexec says: it overrides the status of
-  # any child it stopped with 0. The id is freed first, so a start/2 during a
-  # slow hangup gets a fresh session, not this dying one; the reaping key, taken
-  # before the id is let go, keeps it findable for a kill/1 by id meanwhile.
+  # The link guarantees the hung-up child's EXIT (port_closed at worst). A hangup
+  # reports 129 whatever erlexec says: erlexec reports 0 for any child it
+  # stopped. The reaping key is taken before the id is let go, so a kill/1 by id
+  # finds this dying session while ensure/2 starts a fresh one.
   @impl true
   def terminate(_reason, state) do
     Registry.register(@registry, {:reaping, state.id, self()}, nil)
