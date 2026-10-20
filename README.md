@@ -103,7 +103,7 @@ The server closes `4000` when the session ends, `4404` when a reconnect
 not) or the spawn is refused (`:command` or `:cwd` not found, or an option
 rejected, such as a bad `:cols` or a `:max_lag` that is no positive integer —
 permanent), and `1011` for any other start failure, retried because pty cannot
-tell a passing failure (resources) from a fault (an option that crashes init);
+tell a passing failure (resources) from a fault (a malformed option);
 the host's logs show which. `1013` means this client fell over `:max_lag`
 (1 000) messages behind and was taken off the feed; retried, it reattaches and resyncs
 from the scrollback. `1000` is never the session's: Bandit

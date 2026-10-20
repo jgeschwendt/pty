@@ -40,7 +40,7 @@ defmodule Pty.Socket do
       is rejected (e.g. a bad `:cols`, or a `:max_lag` that is no positive
       integer). Permanent.
     * close `1011`: any other start failure. Retried: pty cannot tell a passing
-      failure (resources) from a fault (an option that crashes init); the
+      failure (resources) from a fault (a malformed option); the
       host's logs show which.
     * close `1013`: this subscriber fell over `:max_lag` messages behind and
       was taken off the feed (see `Pty.Session`). Retried: the client reattaches and gets
