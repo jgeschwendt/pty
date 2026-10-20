@@ -60,7 +60,6 @@ defmodule Pty.SessionTest do
       os_pid = :sys.get_state(pid).os_pid
       Process.exit(pid, :kill)
       refute Session.info(pid)
-      # Killed outright, terminate/2 never runs: the erlexec link takes the child.
       poll_until(fn -> not alive?(os_pid) end)
     end
 
@@ -104,7 +103,7 @@ defmodule Pty.SessionTest do
       assert {:noreply, %{subs: kept}} = Session.handle_info({:stdout, 1, "x"}, state)
       assert kept == %{subs | self() => {:lagged, subs[self()]}}
       assert_received {:pty_lagged}
-      # A detach demonitors a lagged one too.
+
       assert Session.handle_cast({:detach, self()}, %{state | subs: kept}) ==
                {:noreply, %{state | subs: Map.delete(subs, self())}}
     end
@@ -124,11 +123,14 @@ defmodule Pty.SessionTest do
     end
 
     pid = start_sh_session([])
+    # 80x24 is unchanged: the winsz skip. Casts then a call arrive in order: no polling.
+    Session.resize(pid, 80, 24)
     Session.resize(pid, 100, 40)
+    assert %{cols: 100, rows: 40} = Session.info(pid)
     assert echo(pid, "size=$(stty size)") =~ "size=40 100"
   end
 
-  test "spec resolution and metadata: PTY_ARGS split, app env, documented keys, start order, resize" do
+  test "spec resolution and metadata: PTY_ARGS split, app env, documented keys, start order" do
     System.put_env("PTY_ARGS", "-u  -n")
     on_exit(fn -> System.delete_env("PTY_ARGS") end)
     Application.put_env(:pty, :scrollback, 4)
@@ -145,11 +147,6 @@ defmodule Pty.SessionTest do
     ids = [id | for(_ <- 1..9, do: elem(start_session(), 0))]
     assert Enum.all?(ids, &(&1 =~ ~r/\A[A-Za-z0-9_-]{12}\z/))
     assert ids == for(%{id: i} <- Session.list(), i in ids, do: i)
-
-    # 80x24 is unchanged: the winsz skip. Casts then a call arrive in order: no polling.
-    Session.resize(pid, 80, 24)
-    Session.resize(pid, 100, 40)
-    assert %{cols: 100, rows: 40} = Session.info(pid)
   end
 
   test "kill/1 reaps a live id, then is not found even while its keys linger; kill_all/0 reaps and counts" do
@@ -167,7 +164,6 @@ defmodule Pty.SessionTest do
 
     for _ <- 1..2, do: ready(start_session())
 
-    # kill_all is global; the suite is async: false so nothing else is live.
     assert Session.kill_all() == 2
     assert Session.list() == []
   end
@@ -184,7 +180,6 @@ defmodule Pty.SessionTest do
         assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
       end
 
-      # port_closed: erlexec itself went down.
       assert {:stop, :normal, %{exit: 1}} =
                Session.handle_info({:EXIT, self(), :port_closed}, %{exec_pid: self(), exit: nil})
     end
