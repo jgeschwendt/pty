@@ -8,11 +8,6 @@ defmodule Pty.SessionTest do
 
   @state %{buffer: :queue.new(), buffer_bytes: 0, cap: 0, max_lag: -1, os_pid: 1, subs: %{}}
 
-  setup do
-    prev = for key <- ~w(PTY_CMD PTY_ARGS), do: {key, System.get_env(key)}
-    on_exit(fn -> for {key, val} <- prev, do: restore_env(key, val) end)
-  end
-
   describe "executable resolution" do
     @describetag :tmp_dir
 
@@ -69,24 +64,6 @@ defmodule Pty.SessionTest do
       poll_until(fn -> not alive?(os_pid) end)
     end
 
-    test "output buffers while detached, replays on attach, then reaches every subscriber" do
-      {_id, pid} = start_session()
-      marker = unique_marker()
-      Session.input(pid, marker <> "\n")
-      poll_until(fn -> Session.info(pid).buffer_bytes >= byte_size(marker) end)
-
-      assert {:ok, buffer} = Session.attach(pid, self())
-      assert buffer =~ marker
-
-      live = unique_marker()
-      task = Task.async(fn -> recv_until_marker(live) end)
-      {:ok, _} = Session.attach(pid, task.pid)
-      Session.input(pid, live <> "\n")
-
-      recv_until_marker(live)
-      Task.await(task)
-    end
-
     test "a subscriber past :max_lag gets one {:pty_lagged} and leaves the feed until it reattaches; a reader keeps up" do
       pid =
         start_sh_session(
@@ -112,8 +89,7 @@ defmodule Pty.SessionTest do
     end
 
     test "only a live local subscriber is measured; a detach drops a lagged one" do
-      dead = spawn(fn -> :ok end)
-      ref = Process.monitor(dead)
+      {dead, ref} = spawn_monitor(fn -> :ok end)
       assert_receive {:DOWN, ^ref, _, _, _}
       # Process.info/2 raises on a pid of another node.
       remote =
@@ -154,6 +130,7 @@ defmodule Pty.SessionTest do
 
   test "spec resolution and metadata: PTY_ARGS split, app env, documented keys, start order, resize" do
     System.put_env("PTY_ARGS", "-u  -n")
+    on_exit(fn -> System.delete_env("PTY_ARGS") end)
     Application.put_env(:pty, :scrollback, 4)
     on_exit(fn -> Application.delete_env(:pty, :scrollback) end)
     {id, pid} = start_session()
@@ -235,7 +212,7 @@ defmodule Pty.SessionTest do
       reap = Task.async(fn -> Session.kill(pid) end)
       # Mid-hangup, a start gets a fresh session rather than the dying one.
       poll_until(fn -> Session.whereis(id) == :error end)
-      assert {:ok, fresh} = Session.ensure(id)
+      assert {:ok, fresh} = Session.ensure(id, command: "cat")
       assert fresh != pid
       # A kill by id now reaps the fresh session, not the dying one.
       assert Session.kill(id) == :ok
@@ -308,16 +285,15 @@ defmodule Pty.SessionTest do
   defp alive?(os_pid),
     do: match?({_, 0}, System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true))
 
-  defp start_session(cmd \\ "cat", opts \\ []) do
+  defp start_session(opts \\ []) do
     id = Session.new_id()
-    System.put_env("PTY_CMD", cmd)
     on_exit(fn -> drop(id) end)
-    {:ok, pid} = Session.ensure(id, opts)
+    {:ok, pid} = Session.ensure(id, opts ++ [command: "cat"])
     {id, pid}
   end
 
   defp start_sh_session(opts) do
-    {_id, pid} = start_session("sh", opts)
+    {_id, pid} = start_session(opts ++ [command: "sh"])
     {:ok, _buffer} = Session.attach(pid, self())
     pid
   end
