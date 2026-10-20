@@ -60,7 +60,8 @@ defmodule Pty.SessionTest do
       os_pid = :sys.get_state(pid).os_pid
       Process.exit(pid, :kill)
       refute Session.info(pid)
-      poll_until(fn -> not alive?(os_pid) end)
+      # 4 s: a cat not yet exec'd ignores the link's SIGTERM; SIGKILL follows 1 s on.
+      poll_until(fn -> not alive?(os_pid) end, 160)
     end
 
     test "a subscriber past :max_lag gets one {:pty_lagged} and leaves the feed until it reattaches; a reader keeps up" do
@@ -83,6 +84,7 @@ defmodule Pty.SessionTest do
       refute_received _
 
       {:ok, _} = Session.attach(pid, self())
+      assert Process.info(pid, :monitors) == {:monitors, [process: self()]}
       Session.input(pid, "back\n")
       recv_until_marker("back")
     end
@@ -117,9 +119,9 @@ defmodule Pty.SessionTest do
           {%{"TERM" => false}, "none"}
         ] do
       assert echo(
-               start_sh_session(env: env),
-               "term=$(printenv TERM || echo none) home=$HOME size=$(stty size)"
-             ) =~ "term=#{term} home=#{System.get_env("HOME")} size=24 80"
+               start_sh_session(env: Map.put(env, "PTY_PROBE", "p")),
+               "probe=$PTY_PROBE term=$(printenv TERM || echo none) home=$HOME size=$(stty size)"
+             ) =~ "probe=p term=#{term} home=#{System.get_env("HOME")} size=24 80"
     end
 
     pid = start_sh_session([])
@@ -131,8 +133,9 @@ defmodule Pty.SessionTest do
   end
 
   test "spec resolution and metadata: PTY_ARGS split, app env, documented keys, start order" do
+    prev = System.get_env("PTY_ARGS")
+    on_exit(fn -> restore_env("PTY_ARGS", prev) end)
     System.put_env("PTY_ARGS", "-u  -n")
-    on_exit(fn -> System.delete_env("PTY_ARGS") end)
     Application.put_env(:pty, :scrollback, 4)
     on_exit(fn -> Application.delete_env(:pty, :scrollback) end)
     {id, pid} = start_session()
