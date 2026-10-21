@@ -263,7 +263,8 @@ log or the registry, but an id is a name, not a credential.
 - **Scrollback is raw bytes**: a bounded deque of output chunks (`:scrollback`,
   256 KB default, chunk-aligned; a single chunk over the cap keeps its tail,
   and small chunks join up to cap/64, so one-byte echoes cost about the cap;
-  a replay cut mid-character drops its stray UTF-8 continuation bytes).
+  a replay past an eviction or a kept tail drops up to three leading UTF-8
+  continuation bytes, the remains of a split character).
   Replay redraws a full-screen TUI correctly in practice but is not a VT
   snapshot; for exactness, parse terminal state server-side and redraw from
   that.
