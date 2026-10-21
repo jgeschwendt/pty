@@ -268,6 +268,14 @@ defmodule Pty.SessionTest do
              Session.handle_info({:stdout, 1, "y"}, kept)
 
     assert :queue.to_list(q) == ["y"]
+
+    # Tiny chunks join the last one up to cap/64: a 6_400 cap queues 100-byte chunks.
+    tiny =
+      Enum.reduce(1..250, %{@state | cap: 6_400}, fn _, s ->
+        elem(Session.handle_info({:stdout, 1, "z"}, s), 1)
+      end)
+
+    assert Enum.map(:queue.to_list(tiny.buffer), &byte_size/1) == [100, 100, 50]
   end
 
   defp alive?(os_pid),

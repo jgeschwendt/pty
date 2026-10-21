@@ -390,14 +390,27 @@ defmodule Pty.Session do
   # Replayed to reconstruct the terminal on (re)attach: a bounded deque of raw
   # output chunks, evicted whole, so replay is chunk-aligned and ≤ cap. A chunk
   # alone over the cap keeps a copy of its tail (a bare slice would pin the whole
-  # chunk), so a replay is never emptied; an empty one is not queued.
+  # chunk), so a replay is never emptied; an empty one is not queued. A chunk
+  # joins the last one while both fit cap/64: a queued byte costs ~40 of heap,
+  # so a cap of one-byte echoes would hold 40× the cap, while eviction still
+  # loses at most cap/64 more than whole chunks would.
   defp append(state, <<>>), do: state
 
   defp append(%{cap: cap} = state, data) when byte_size(data) > cap,
     do: append(state, :binary.copy(binary_part(data, byte_size(data), -cap)))
 
-  defp append(%{buffer: q, buffer_bytes: n} = state, data),
-    do: trim(%{state | buffer: :queue.in(data, q), buffer_bytes: n + byte_size(data)})
+  defp append(%{buffer: q, buffer_bytes: n, cap: cap} = state, data) do
+    q =
+      case :queue.peek_r(q) do
+        {:value, last} when byte_size(last) + byte_size(data) <= div(cap, 64) ->
+          :queue.in(last <> data, :queue.drop_r(q))
+
+        _ ->
+          :queue.in(data, q)
+      end
+
+    trim(%{state | buffer: q, buffer_bytes: n + byte_size(data)})
+  end
 
   defp trim(%{buffer: q, buffer_bytes: n, cap: cap} = state) when n > cap do
     {{:value, head}, q} = :queue.out(q)
