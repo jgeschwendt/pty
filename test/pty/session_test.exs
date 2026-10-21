@@ -276,6 +276,10 @@ defmodule Pty.SessionTest do
       end)
 
     assert Enum.map(:queue.to_list(tiny.buffer), &byte_size/1) == [100, 100, 50]
+
+    # A replay cut mid-character drops at most three stray continuation bytes.
+    split = %{@state | buffer: :queue.from_list([<<0x80, 0x80, 0x80, 0x80>>, "k"])}
+    assert {:reply, {:ok, <<0x80, ?k>>}, _} = Session.handle_call({:attach, self()}, nil, split)
   end
 
   defp alive?(os_pid),

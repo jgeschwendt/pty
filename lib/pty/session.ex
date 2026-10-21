@@ -336,9 +336,14 @@ defmodule Pty.Session do
   # A re-attach keeps its monitor: one per subscriber, however often it asks.
   # A lagged one is put back on the feed.
   def handle_call({:attach, sub}, _from, state) do
-    {:reply, {:ok, state.buffer |> :queue.to_list() |> IO.iodata_to_binary()},
+    {:reply, {:ok, state.buffer |> :queue.to_list() |> IO.iodata_to_binary() |> lead(3)},
      put_in(state.subs[sub], unlag(state.subs[sub] || Process.monitor(sub)))}
   end
+
+  # An evicted chunk or a kept tail can split a UTF-8 character: the replay drops
+  # the stray continuation bytes (three at most) that would draw as U+FFFD.
+  defp lead(<<0b10::2, _::6, rest::binary>>, n) when n > 0, do: lead(rest, n - 1)
+  defp lead(replay, _n), do: replay
 
   @impl true
   def handle_cast({:detach, sub}, state) do
