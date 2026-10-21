@@ -6,7 +6,15 @@ defmodule Pty.SessionTest do
 
   alias Pty.Session
 
-  @state %{buffer: :queue.new(), buffer_bytes: 0, cap: 0, max_lag: -1, os_pid: 1, subs: %{}}
+  @state %{
+    buffer: :queue.new(),
+    buffer_bytes: 0,
+    cap: 0,
+    cut: false,
+    max_lag: -1,
+    os_pid: 1,
+    subs: %{}
+  }
 
   describe "executable resolution" do
     @describetag :tmp_dir
@@ -228,11 +236,12 @@ defmodule Pty.SessionTest do
       assert Session.kill(id) == :ok
       refute alive?(os_pid)
       assert Task.await(reap) == :ok
-      # The hangup relays through the same max_lag; a lagged subscriber still hears the end.
-      for _ <- 0..3, do: assert_received({:pty_data, _})
-      assert_received {:pty_lagged}
-      assert_received {:pty_exit, 129}
-      refute_received _
+      # The hangup relays through the same max_lag; a lagged subscriber still hears
+      # the end. A call reply in flight counts toward the lag too: at most 4 chunks.
+      {:messages, msgs} = Process.info(self(), :messages)
+      {data, rest} = Enum.split_while(msgs, &match?({:pty_data, _}, &1))
+      assert length(data) in 1..4
+      assert rest == [{:pty_lagged}, {:pty_exit, 129}]
       # The orphaned sleep is reaped by init, not erlexec: a zombie answers kill -0.
       poll_until(fn -> not alive?(String.to_integer(bg)) end)
     end
@@ -264,8 +273,11 @@ defmodule Pty.SessionTest do
     assert :queue.is_empty(off.buffer)
 
     # Replay is chunk-aligned: one byte over the cap drops the whole 100-byte tail.
-    assert {:noreply, %{buffer: q, buffer_bytes: 1}} =
-             Session.handle_info({:stdout, 1, "y"}, kept)
+    # A kept tail and an eviction each mark the replay cut.
+    assert kept.cut
+
+    assert {:noreply, %{buffer: q, buffer_bytes: 1, cut: true}} =
+             Session.handle_info({:stdout, 1, "y"}, %{kept | cut: false})
 
     assert :queue.to_list(q) == ["y"]
 
@@ -276,10 +288,18 @@ defmodule Pty.SessionTest do
       end)
 
     assert Enum.map(:queue.to_list(tiny.buffer), &byte_size/1) == [100, 100, 50]
+    refute tiny.cut
 
-    # A replay cut mid-character drops at most three stray continuation bytes.
-    split = %{@state | buffer: :queue.from_list([<<0x80, 0x80, 0x80, 0x80>>, "k"])}
-    assert {:reply, {:ok, <<0x80, ?k>>}, _} = Session.handle_call({:attach, self()}, nil, split)
+    # Past a cut, a replay drops at most three stray continuation bytes, never a
+    # lead byte; one from the child's first byte keeps them all.
+    for {cut, head, replay} <- [
+          {true, <<0x80, 0x80, 0x80, 0x80>>, <<0x80, ?k>>},
+          {true, "é", "ék"},
+          {false, <<0x80>>, <<0x80, ?k>>}
+        ] do
+      split = %{@state | buffer: :queue.from_list([head, "k"]), cut: cut}
+      assert {:reply, {:ok, ^replay}, _} = Session.handle_call({:attach, self()}, nil, split)
+    end
   end
 
   defp alive?(os_pid),

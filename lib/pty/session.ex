@@ -314,6 +314,7 @@ defmodule Pty.Session do
          |> Map.merge(%{
            buffer: :queue.new(),
            buffer_bytes: 0,
+           cut: false,
            exec_pid: exec_pid,
            exit: nil,
            id: id,
@@ -336,12 +337,15 @@ defmodule Pty.Session do
   # A re-attach keeps its monitor: one per subscriber, however often it asks.
   # A lagged one is put back on the feed.
   def handle_call({:attach, sub}, _from, state) do
-    {:reply, {:ok, state.buffer |> :queue.to_list() |> IO.iodata_to_binary() |> lead(3)},
+    replay = state.buffer |> :queue.to_list() |> IO.iodata_to_binary()
+
+    {:reply, {:ok, lead(replay, if(state.cut, do: 3, else: 0))},
      put_in(state.subs[sub], unlag(state.subs[sub] || Process.monitor(sub)))}
   end
 
-  # An evicted chunk or a kept tail can split a UTF-8 character: the replay drops
-  # the stray continuation bytes (three at most) that would draw as U+FFFD.
+  # An evicted chunk or a kept tail can split a UTF-8 character: a replay past
+  # either drops the stray continuation bytes (three at most) that would draw as
+  # U+FFFD. One still starting at the child's first byte is untouched.
   defp lead(<<0b10::2, _::6, rest::binary>>, n) when n > 0, do: lead(rest, n - 1)
   defp lead(replay, _n), do: replay
 
@@ -396,13 +400,14 @@ defmodule Pty.Session do
   # output chunks, evicted whole, so replay is chunk-aligned and ≤ cap. A chunk
   # alone over the cap keeps a copy of its tail (a bare slice would pin the whole
   # chunk), so a replay is never emptied; an empty one is not queued. A chunk
-  # joins the last one while both fit cap/64: a queued byte costs ~40 of heap,
-  # so a cap of one-byte echoes would hold 40× the cap, while eviction still
-  # loses at most cap/64 more than whole chunks would.
+  # joins the last one while both fit cap/64: a queued chunk costs ~40 bytes of
+  # heap beyond its data, so a cap of one-byte echoes would hold 40× the cap,
+  # while eviction still loses at most cap/64 more than whole chunks would.
+  # Either cut marks the replay as starting mid-stream (see lead/2).
   defp append(state, <<>>), do: state
 
   defp append(%{cap: cap} = state, data) when byte_size(data) > cap,
-    do: append(state, :binary.copy(binary_part(data, byte_size(data), -cap)))
+    do: append(%{state | cut: true}, :binary.copy(binary_part(data, byte_size(data), -cap)))
 
   defp append(%{buffer: q, buffer_bytes: n, cap: cap} = state, data) do
     q =
@@ -419,7 +424,7 @@ defmodule Pty.Session do
 
   defp trim(%{buffer: q, buffer_bytes: n, cap: cap} = state) when n > cap do
     {{:value, head}, q} = :queue.out(q)
-    trim(%{state | buffer: q, buffer_bytes: n - byte_size(head)})
+    trim(%{state | buffer: q, buffer_bytes: n - byte_size(head), cut: true})
   end
 
   defp trim(state), do: state
