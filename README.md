@@ -261,7 +261,8 @@ log or the registry, but an id is a name, not a credential.
   above the interval) closes a socket that stops answering. A live browser
   answers by itself, so a terminal whose human is only thinking stays open.
 - **Scrollback is raw bytes**: a bounded deque of output chunks (`:scrollback`,
-  256 KB default, chunk-aligned; a single chunk over the cap keeps its tail).
+  256 KB default, chunk-aligned; a single chunk over the cap keeps its tail,
+  and small chunks join up to cap/64, so one-byte echoes cost about the cap).
   Replay redraws a full-screen TUI correctly in practice but is not a VT
   snapshot; for exactness, parse terminal state server-side and redraw from
   that.
