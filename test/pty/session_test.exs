@@ -202,8 +202,18 @@ defmodule Pty.SessionTest do
       refute alive?(os_pid)
     end
 
-    test "a child deaf to HUP and TERM is killed with its process group, still a 129; its id is free at once" do
-      pid = start_sh_session(args: ["-c", "trap '' HUP TERM; sleep 30 & echo bg=$! .; wait"])
+    # One ladder (2 s grace + 1 s kill timeout) carries every mid-hangup claim.
+    test "a child deaf to HUP and TERM is killed with its process group, still a 129; its id is free at once, a kill by id waits it out, its flood is bounded" do
+      # The sleep is forked while HUP is ignored, so only the group SIGKILL reaches it.
+      pid =
+        start_sh_session(
+          args: [
+            "-c",
+            "trap '' HUP TERM; sleep 30 & trap 'seq 100000' HUP; echo bg=$! .; while :; do wait; done"
+          ],
+          max_lag: 3
+        )
+
       [_, bg] = Regex.run(~r/bg=(\d+) \./, recv_until_marker(" ."))
       %{id: id, os_pid: os_pid} = :sys.get_state(pid)
 
@@ -212,31 +222,9 @@ defmodule Pty.SessionTest do
       poll_until(fn -> Session.whereis(id) == :error end)
       assert {:ok, fresh} = Session.ensure(id, command: "cat")
       assert fresh != pid
-      # A kill by id now reaps the fresh session, not the dying one.
+      # A kill by id reaps the fresh session first, then waits the dying one out.
       assert Session.kill(id) == :ok
       refute Process.alive?(fresh)
-      assert Task.await(reap) == :ok
-      assert_receive {:pty_exit, 129}
-      refute alive?(os_pid)
-      # The orphaned sleep is reaped by init, not erlexec: a zombie answers kill -0.
-      poll_until(fn -> not alive?(String.to_integer(bg)) end)
-    end
-
-    test "a kill by id during another reap's hangup returns once the child is gone; its flood is bounded too" do
-      pid =
-        start_sh_session(
-          args: [
-            "-c",
-            "trap '' TERM; trap 'seq 100000' HUP; echo up; while :; do sleep 0.1; done"
-          ],
-          max_lag: 3
-        )
-
-      recv_until_marker("up")
-      %{id: id, os_pid: os_pid} = :sys.get_state(pid)
-
-      reap = Task.async(fn -> Session.kill(pid) end)
-      poll_until(fn -> Session.whereis(id) == :error end)
       assert Session.kill(id) == :ok
       refute alive?(os_pid)
       assert Task.await(reap) == :ok
@@ -245,6 +233,8 @@ defmodule Pty.SessionTest do
       assert_received {:pty_lagged}
       assert_received {:pty_exit, 129}
       refute_received _
+      # The orphaned sleep is reaped by init, not erlexec: a zombie answers kill -0.
+      poll_until(fn -> not alive?(String.to_integer(bg)) end)
     end
 
     test "a crashed session still tells subscribers and takes its child along" do
