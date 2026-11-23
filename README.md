@@ -264,7 +264,10 @@ log or the registry, but an id is a name, not a credential.
   256 KB default, chunk-aligned; a single chunk over the cap keeps its tail,
   and small chunks join up to cap/64, so one-byte echoes cost about the cap;
   a replay past an eviction or a kept tail drops up to three leading UTF-8
-  continuation bytes, the remains of a split character).
+  continuation bytes, the remains of a split character, and leads with the
+  DEC private modes — `ESC [ ? Pm h|l`, alternate screen, mouse, cursor — the
+  child set in the evicted bytes, so a TUI that entered the alternate screen
+  long ago is replayed into it).
   Replay redraws a full-screen TUI correctly in practice but is not a VT
   snapshot; for exactness, parse terminal state server-side and redraw from
   that.

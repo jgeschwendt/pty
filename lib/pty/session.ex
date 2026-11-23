@@ -4,7 +4,10 @@ defmodule Pty.Session do
 
   One `Session` owns one child process running in a real PTY. Clients (a
   `Pty.Socket`, a LiveView, anything holding a pid) *attach* as subscribers:
-  they receive a replay of recent output, then a live feed. Detaching (closing
+  they receive a replay of recent output, then a live feed. A replay that starts
+  mid-stream leads with the DEC private modes (`ESC [ ? Pm h|l`) the child set
+  before its first byte, so a child that entered the alternate screen long ago
+  is redrawn into it. Detaching (closing
   the tab, refreshing, network drop) does not touch the PTY — the process keeps
   running in the background and any UI can reattach by session id. Multiple
   clients may attach at once; they share one multiplexed terminal.
@@ -80,6 +83,8 @@ defmodule Pty.Session do
   # URL-safe base64 alphabet, capped: an id reaches logs and admin surfaces, so
   # control/ANSI characters and unbounded length are rejected at the door.
   @session_id ~r/\A[\w-]{1,64}\z/
+  # Longer than any real DECSET/DECRST a child sends; past it a candidate is dropped.
+  @mode_seq_max 64
 
   ## Client API
 
@@ -314,10 +319,12 @@ defmodule Pty.Session do
          |> Map.merge(%{
            buffer: :queue.new(),
            buffer_bytes: 0,
+           carry: <<>>,
            cut: false,
            exec_pid: exec_pid,
            exit: nil,
            id: id,
+           modes: %{},
            os_pid: os_pid,
            started: System.system_time(:second),
            subs: %{}
@@ -335,11 +342,13 @@ defmodule Pty.Session do
   end
 
   # A re-attach keeps its monitor: one per subscriber, however often it asks.
-  # A lagged one is put back on the feed.
+  # A lagged one is put back on the feed. Modes are only recorded on a cut, so an
+  # uncut replay carries none.
   def handle_call({:attach, sub}, _from, state) do
+    modes = for {n, v} <- Enum.sort(state.modes), into: "", do: "\e[?#{n}#{v}"
     replay = state.buffer |> :queue.to_list() |> IO.iodata_to_binary()
 
-    {:reply, {:ok, lead(replay, if(state.cut, do: 3, else: 0))},
+    {:reply, {:ok, modes <> lead(replay, if(state.cut, do: 3, else: 0))},
      put_in(state.subs[sub], unlag(state.subs[sub] || Process.monitor(sub)))}
   end
 
@@ -403,11 +412,18 @@ defmodule Pty.Session do
   # joins the last one while both fit cap/64: a queued chunk costs ~40 bytes of
   # heap beyond its data, so a cap of one-byte echoes would hold 40× the cap,
   # while eviction still loses at most cap/64 more than whole chunks would.
-  # Either cut marks the replay as starting mid-stream (see lead/2).
+  # Either cut marks the replay as starting mid-stream (see lead/2) and is
+  # scanned for modes (see evict/2): an oversized chunk evicts the whole buffer
+  # ahead of its own head, in stream order.
   defp append(state, <<>>), do: state
 
-  defp append(%{cap: cap} = state, data) when byte_size(data) > cap,
-    do: append(%{state | cut: true}, :binary.copy(binary_part(data, byte_size(data), -cap)))
+  defp append(%{cap: cap} = state, data) when byte_size(data) > cap do
+    head = [:queue.to_list(state.buffer), binary_part(data, 0, byte_size(data) - cap)]
+
+    %{state | buffer: :queue.new(), buffer_bytes: 0}
+    |> evict(head)
+    |> append(:binary.copy(binary_part(data, byte_size(data), -cap)))
+  end
 
   defp append(%{buffer: q, buffer_bytes: n, cap: cap} = state, data) do
     q =
@@ -424,10 +440,41 @@ defmodule Pty.Session do
 
   defp trim(%{buffer: q, buffer_bytes: n, cap: cap} = state) when n > cap do
     {{:value, head}, q} = :queue.out(q)
-    trim(%{state | buffer: q, buffer_bytes: n - byte_size(head), cut: true})
+    trim(evict(%{state | buffer: q, buffer_bytes: n - byte_size(head)}, head))
   end
 
   defp trim(state), do: state
+
+  # Evicted bytes are contiguous in stream order, so scanning each once parses
+  # the stream ahead of the replay's first byte for DECSET/DECRST (ESC [ ? Pm h|l),
+  # last value per mode winning, resets kept: `?25l` matters as much as
+  # `?1049h`. A sequence split across evictions is carried into the next scan,
+  # copied so it pins no chunk. A candidate over @mode_seq_max bytes and a mode
+  # over 9999 are dropped, so a hostile child cannot grow either without bound.
+  defp evict(state, bytes) do
+    {modes, carry} = scan(IO.iodata_to_binary([state.carry, bytes]), state.modes)
+    %{state | carry: :binary.copy(carry), cut: true, modes: modes}
+  end
+
+  defp scan(<<"\e[?", rest::binary>> = seq, modes), do: params(rest, 0, [], seq, modes)
+  defp scan(tail, modes) when tail in ["\e", "\e["], do: {modes, tail}
+  defp scan(<<_, rest::binary>>, modes), do: scan(rest, modes)
+  defp scan(<<>>, modes), do: {modes, <<>>}
+
+  # Mode 0 is none: an empty param (`ESC[?h`, `ESC[?;1h`) records nothing.
+  defp params(bin, _n, _ns, seq, modes) when byte_size(seq) - byte_size(bin) > @mode_seq_max,
+    do: scan(bin, modes)
+
+  defp params(<<d, rest::binary>>, n, ns, seq, modes) when d in ?0..?9,
+    do: params(rest, n * 10 + d - ?0, ns, seq, modes)
+
+  defp params(<<?;, rest::binary>>, n, ns, seq, modes), do: params(rest, 0, [n | ns], seq, modes)
+
+  defp params(<<c, rest::binary>>, n, ns, _seq, modes) when c in ~c"hl",
+    do: scan(rest, Enum.into(for(m <- [n | ns], m in 1..9999, do: {m, <<c>>}), modes))
+
+  defp params(<<>>, _n, _ns, seq, modes), do: {modes, seq}
+  defp params(bin, _n, _ns, _seq, modes), do: scan(bin, modes)
 
   # A subscriber past max_lag queued messages gets one {:pty_lagged} in place of
   # the chunk and is held as {:lagged, ref}: off the feed, since unread its
