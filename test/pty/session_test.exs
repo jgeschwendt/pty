@@ -10,8 +10,10 @@ defmodule Pty.SessionTest do
     buffer: :queue.new(),
     buffer_bytes: 0,
     cap: 0,
+    carry: <<>>,
     cut: false,
     max_lag: -1,
+    modes: %{},
     os_pid: 1,
     subs: %{}
   }
@@ -300,6 +302,48 @@ defmodule Pty.SessionTest do
       split = %{@state | buffer: :queue.from_list([head, "k"]), cut: cut}
       assert {:reply, {:ok, ^replay}, _} = Session.handle_call({:attach, self()}, nil, split)
     end
+  end
+
+  test "a cut replay leads with the DEC private modes set before the cut" do
+    # cap 16 joins no chunks (cap/64 is 0); the 16-byte filler evicts all before it.
+    feed = fn chunks, cap ->
+      state =
+        Enum.reduce(chunks ++ ["0123456789abcdef"], %{@state | cap: cap}, fn chunk, s ->
+          elem(Session.handle_info({:stdout, 1, chunk}, s), 1)
+        end)
+
+      {:reply, {:ok, replay}, _} = Session.handle_call({:attach, self()}, nil, state)
+      replay
+    end
+
+    # Ascending, last value winning; multi-param; split at every prefix (ESC, ESC[,
+    # ESC[?, mid-param); non-mode CSI, mode 0, a mode over 9999 and an over-long
+    # candidate record nothing.
+    assert feed.(
+             [
+               "\e[?1049h\e[?25l",
+               "\e[?1000;",
+               "1006h\e[?1049",
+               "l\e[2J\e[?u\e[>0q",
+               "\e[?10000h\e",
+               "[?7l\e[",
+               "?2004h\e[?h\e[?",
+               "3h\e[?" <> String.duplicate("1", 11),
+               String.duplicate("1", 16),
+               String.duplicate("1", 16),
+               String.duplicate("1", 16),
+               "1111h"
+             ],
+             16
+           ) ==
+             "\e[?3h\e[?7l\e[?25l\e[?1000h\e[?1006h\e[?1049l\e[?2004h0123456789abcdef"
+
+    # A chunk over the cap scans the buffer it evicts, then its own dropped head.
+    assert feed.(["\e[?6h", "\e[?6l\e[?5h" <> String.duplicate("x", 20)], 16) ==
+             "\e[?5h\e[?6l0123456789abcdef"
+
+    # An uncut replay is the child's bytes, untouched.
+    assert feed.(["\e[?1049h"], 100) == "\e[?1049h0123456789abcdef"
   end
 
   defp alive?(os_pid),
