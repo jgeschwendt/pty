@@ -23,3 +23,20 @@ jobs:
       - run: mix test --cover
       # pty.js, driven against fakes (test/js).
       - run: bun test --coverage
+
+  # NEVER `stele build` here: it re-stamps `verified` and would launder staleness;
+  # a stale lock fails here and is fixed by a local build, committed with the change.
+  stele:
+    runs-on: ubuntu-24.04
+    steps:
+      # full history: the churn leash walks verified.sha..HEAD
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # stele's liveness check resolves `mise run ...` commands on PATH
+      - uses: jdx/mise-action@v2
+        with:
+          install_args: hk
+      - run: curl -fsSL https://raw.githubusercontent.com/jgeschwendt/stele/c7882176f321809064205db5b6474827834c5a34/scripts/install.sh | bash -s v0.3.0
+      - run: ~/.local/bin/stele check
+      - run: ~/.local/bin/stele emit --check

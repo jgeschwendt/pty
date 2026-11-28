@@ -47,6 +47,7 @@ defmodule Pty.Client do
 
   @type t :: {:input, binary} | {:resize, pos_integer, pos_integer} | :ignore
 
+  # ※ bad-frame-ignored
   @doc "Decode one client text frame into a command, or `:ignore`."
   @spec decode(binary) :: t
   def decode(text) when is_binary(text) do

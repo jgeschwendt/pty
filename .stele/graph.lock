@@ -1,0 +1,183 @@
+{
+  "adrs": {},
+  "landmarks": {
+    "bad-frame-ignored": {
+      "file": "lib/pty/client.ex",
+      "line": 50,
+      "node": "lib"
+    },
+    "origin-refused": {
+      "file": "lib/pty/plug.ex",
+      "line": 73,
+      "node": "lib"
+    },
+    "reap-unsupervised": {
+      "file": "lib/pty/session.ex",
+      "line": 173,
+      "node": "lib"
+    }
+  },
+  "nodes": {
+    ".github": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": ".github",
+      "kind": "container",
+      "purpose": "CI wiring — ci.yaml's check job (format, compile, mix and bun tests) and the stele job"
+    },
+    "/": {
+      "budget": null,
+      "claims": [
+        {
+          "anchor": "※ bad-frame-ignored",
+          "enforced_by": null,
+          "id": "bad-frame-ignored",
+          "kind": "invariant",
+          "resolved": "lib/pty/client.ex:50",
+          "text": "a bad client frame decodes to `:ignore`, never a crashed session",
+          "verified": {
+            "digest": "c2f3f93bedac73e566fcd724e4ad08756a1a2d5fa2a89f2bb680f14837c55f39",
+            "sha": "21165c658bb630b04e387c33fb243f1cdce11118"
+          }
+        },
+        {
+          "anchor": "※ origin-refused",
+          "enforced_by": null,
+          "id": "origin-refused",
+          "kind": "invariant",
+          "resolved": "lib/pty/plug.ex:73",
+          "text": "a cross-origin browser upgrade is refused unless `:check_origin` admits it",
+          "verified": {
+            "digest": "1308ce969bf8d63f15d56a6f7cfb2081abcb7ad457caff2af0136098da9f6a0d",
+            "sha": "21165c658bb630b04e387c33fb243f1cdce11118"
+          }
+        },
+        {
+          "anchor": "※ reap-unsupervised",
+          "enforced_by": null,
+          "id": "reap-unsupervised",
+          "kind": "invariant",
+          "resolved": "lib/pty/session.ex:173",
+          "text": "reaps stop the session directly, never through the supervisor, so a slow hangup never blocks `start/2`",
+          "verified": {
+            "digest": "920b30e40d78914a12c071cad34780f35783ac3575c7c9dda742ce75690de537",
+            "sha": "21165c658bb630b04e387c33fb243f1cdce11118"
+          }
+        }
+      ],
+      "commands": {
+        "check": "mise run check"
+      },
+      "contains": [
+        ".github",
+        "docs",
+        "lib",
+        "priv",
+        "test"
+      ],
+      "declared": {
+        "allow": [
+          {
+            "edge": "lib",
+            "reason": "mix.exs names the application module and the doc groups"
+          }
+        ],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": [
+          "lib"
+        ]
+      },
+      "id": "/",
+      "kind": "system",
+      "purpose": "pty — embeddable PTY sessions for Elixir hosts; a session owns its PTY through erlexec and outlives every client"
+    },
+    "docs": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": "docs",
+      "kind": "container",
+      "purpose": "the design — index.html (GitHub Pages) is the only design source; page.css holds only what is pty's"
+    },
+    "lib": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": "lib",
+      "kind": "container",
+      "purpose": "the Elixir library — the Pty facade, Session (one GenServer per PTY), Client frame decoder, Socket and Plug"
+    },
+    "priv": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": "priv",
+      "kind": "container",
+      "purpose": "static/pty.js — the browser glue; the host hands xterm.js in"
+    },
+    "test": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": [
+          "lib",
+          "priv"
+        ]
+      },
+      "extracted": {
+        "imports": [
+          "lib",
+          "priv"
+        ]
+      },
+      "id": "test",
+      "kind": "container",
+      "purpose": "ExUnit over real cat/sh PTYs, no mocks; js/ drives pty.js under bun test against hand-written fakes"
+    }
+  },
+  "version": 2
+}
