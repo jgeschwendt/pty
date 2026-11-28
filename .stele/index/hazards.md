@@ -1,0 +1,4 @@
+# Hazards
+
+| claim | node | anchor |
+| --- | --- | --- |

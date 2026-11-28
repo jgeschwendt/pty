@@ -70,6 +70,7 @@ defmodule Pty.Plug do
       not Pty.valid_id?(id) ->
         send_resp(conn, @status_bad_request, "invalid session id")
 
+      # ※ origin-refused
       not origin?(conn, Keyword.get(opts, :check_origin, true)) ->
         send_resp(conn, @status_forbidden, "origin not allowed")
 

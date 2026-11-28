@@ -170,6 +170,7 @@ defmodule Pty.Session do
     end
   end
 
+  # ※ reap-unsupervised
   # Stopped directly, not through the supervisor, which would block every
   # ensure/2 behind a hangup. Any exit — gone already, or ended mid-stop — is
   # caught as not found.
